@@ -1,20 +1,20 @@
 DMA_UTILS?=/home/fpga-v/dma_ip_drivers/QDMA/linux-kernel/apps/dma-utils
 DMA_INCLUDE?=/home/fpga-v/dma_ip_drivers/QDMA/linux-kernel/apps/include
 
-CXXFLAGS = -Wextra -pedantic -O3
-CPPFLAGS = csrc/test_main.cpp csrc/pcie_driver.cpp
+CXXFLAGS = -Wextra -pedantic -O3 -fpermissive
+CPPFLAGS = csrc/test_main.cpp csrc/pcie_driver.cpp csrc/pcie_mempool.cpp
 CPPFLAGS += -I$(DMA_UTILS) -I$(DMA_INCLUDE) -I/home/fpga-v/project/qdma-test/include
 
 
 LDFLAGS = -L
-LIBS = -lqdma -lrt
+LIBS = -lqdma -lrt -laio -lpthread
 
-OUTFILE = qdma
+PROGNAME = qdma_test
 
-all: clean qdma_
+all: clean qdma_build
 
 clean:
-	rm -f $(OUTFILE)
+	rm -f $(PROGNAME)
 
-qdma_:
-	g++ $(CXXFLAGS) $(CPPFLAGS) -o $(OUTFILE) $(LDFLAGS) $(LIBS)
+qdma_build:
+	g++ $(CXXFLAGS) $(CPPFLAGS) -o $(PROGNAME) $(LDFLAGS) $(LIBS)

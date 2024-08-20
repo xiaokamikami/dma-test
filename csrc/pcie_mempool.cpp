@@ -1,14 +1,12 @@
 #include <stdio.h>
 #include "pcie_mempool.h"
 
-void FpgaPcieMemPool::mempool_create(struct mempool_handle *mpool, unsigned int entry_size,
-		unsigned int max_entries)
-{
+int FpgaPcieMemPool::mempool_create(struct mempool_handle *mpool, unsigned int entry_size, unsigned int max_entries) {
 #ifdef USE_MEMPOOL
 	if (posix_memalign((void **)&mpool->mempool, DMAPERF_PAGE_SIZE,
 			   max_entries * (entry_size + sizeof(struct dma_meminfo)))) {
 		printf("OOM Mempool\n");
-		return -ENOMEM;
+		exit(1);
 	}
 	mpool->mempool_info = (struct dma_meminfo *)(((char *)mpool->mempool) + (max_entries * entry_size));
 #endif
@@ -16,19 +14,17 @@ void FpgaPcieMemPool::mempool_create(struct mempool_handle *mpool, unsigned int 
 	mpool->total_memblks = max_entries;
 	mpool->mempool_blkidx = 0;
 
-	return 0;
+    return 0;
 }
 
-void FpgaPcieMemPool::mempool_free(struct mempool_handle *mpool)
-{
+void FpgaPcieMemPool::mempool_free(struct mempool_handle *mpool) {
 #ifdef USE_MEMPOOL
 	free(mpool->mempool);
 	mpool->mempool = NULL;
 #endif
 }
 
-void* FpgaPcieMemPool::dma_memalloc(struct mempool_handle *mpool, unsigned int num_blks)
-{
+void* FpgaPcieMemPool::dma_memalloc(struct mempool_handle *mpool, unsigned int num_blks) {
 	unsigned int _mempool_blkidx = mpool->mempool_blkidx;
 	unsigned int tmp_blkidx = _mempool_blkidx;
 	unsigned int max_blkcnt = tmp_blkidx + num_blks;
@@ -74,8 +70,7 @@ void* FpgaPcieMemPool::dma_memalloc(struct mempool_handle *mpool, unsigned int n
 	return memptr;
 }
 
-void FpgaPcieMemPool::dma_free(struct mempool_handle *mpool, void *memptr)
-{
+void FpgaPcieMemPool::dma_free(struct mempool_handle *mpool, void *memptr) {
 #ifdef USE_MEMPOOL
 	struct dma_meminfo *_meminfo = mpool->mempool_info;
 	unsigned int idx;
@@ -95,4 +90,10 @@ void FpgaPcieMemPool::dma_free(struct mempool_handle *mpool, void *memptr)
 #else
 	free(memptr);
 #endif
+}
+
+void FpgaPcieMemPool::mempool_handle_free() {
+	mempool_free(&iocbhandle);
+	mempool_free(&ctxhandle);
+	mempool_free(&datahandle);
 }

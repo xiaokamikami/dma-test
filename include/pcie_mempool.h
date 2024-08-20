@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <stdint.h>
 
 #include "dmautils.h"
 #include "qdma_nl.h"
@@ -26,10 +27,12 @@ public:
         struct dma_meminfo *mempool_info;
     };
 
-    void mempool_create(struct mempool_handle *mpool, unsigned int entry_size, unsigned int max_entries);
+    int mempool_create(struct mempool_handle *mpool, unsigned int entry_size, unsigned int max_entries);
     void mempool_free(struct mempool_handle *mpool);
     void *dma_memalloc(struct mempool_handle *mpool, unsigned int num_blks);
     void dma_free(struct mempool_handle *mpool, void *memptr);
+
+    void mempool_handle_free();
 
 private:
     struct mempool_handle ctxhandle;

@@ -131,13 +131,22 @@ public:
 
     void aioInit();
     void create_thread_info(void);
+	int setup_thrd_env(struct io_info *_info, unsigned char is_new_fd);
+
+	int qdma_add_queue(unsigned char is_vf, struct io_info *info);
+	int qdma_start_queue(unsigned char is_vf, struct io_info *info);
+	int qdma_prepare_q_add(struct xcmd_info *xcmd, unsigned char is_vf, struct io_info *info);
+	int qdma_prepare_q_start(struct xcmd_info *xcmd, unsigned char is_vf, struct io_info *info);
+    int qdma_register_write(unsigned char is_vf,
+		unsigned int pf, int bar, unsigned long reg,
+		unsigned long value);
 
     size_t asyncRead(void* buffer, size_t size, uint64_t offset);
     size_t asyncWrite(const void* buffer, size_t size, uint64_t offset);
 
 private:
     FpgaPcieMemPool dmaMemPool;
-
+	struct io_info *info = NULL;
 	enum q_mode mode;
 	enum q_dir dir;
 
@@ -151,13 +160,12 @@ private:
 	char *pf_dmactl_prefix_str = "qdma";
 	char trigmode[10];
 
-	struct io_info *info = NULL;
-
 	unsigned int *io_exit = 0;
 	int io_exit_id;
 
 	int *child_pid_lst = NULL;
 	int q_lst_stop_mid;
+	int keyhole_en;
 	int base_pid;
 	int shmid;
 
@@ -190,7 +198,7 @@ private:
 	unsigned int num_thrds_per_q = 1;
 	unsigned int pci_bus = 0;
 	unsigned int pci_dev = 0;
-	
+	unsigned int vf_perf = 0;
 };
 
 

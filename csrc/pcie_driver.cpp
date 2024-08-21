@@ -1,9 +1,17 @@
 #include <error.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
 
 #include "dma_xfer_utils.c"
+#include "dmautils.h"
+
 #include "pcie_driver.h"
+
+static void xnl_dump_response(const char *resp) {
+	printf("%s", resp);
+}
 
 int FpgaPcieDevice::open_pcie_device(const char *devname) {
     fpga_fd = open(devname, O_RDWR);
@@ -114,7 +122,7 @@ void FpgaPcieDeviceAsyncIO::create_thread_info(void) {
 	int last_fd = -1;
 	unsigned char is_new_fd = 1;
 
-  if ((shmid = shmget(IPC_PRIVATE, num_thrds * sizeof(struct io_info), IPC_CREAT | 0666)) < 0) {
+  	if ((shmid = shmget(IPC_PRIVATE, num_thrds * sizeof(struct io_info), IPC_CREAT | 0666)) < 0) {
 		error(-1, errno, "smget returned -1\n");
 	}
 	if ((q_lst_stop_mid = shmget(IPC_PRIVATE, dir_factor * num_q * num_pf, IPC_CREAT | 0666)) < 0) {
@@ -138,9 +146,8 @@ void FpgaPcieDeviceAsyncIO::create_thread_info(void) {
 	}
 
 	if ((mode == Q_MODE_ST) && (dir != Q_DIR_H2C)) {
-		error(-1, errno, "Need Vf support");
-		// qdma_register_write(vf_perf, (pci_bus << 12) | (pci_dev << 4) | pf_start, 2, 0x50, cmptsz);
-		// qdma_register_write(vf_perf, (pci_bus << 12) | (pci_dev << 4) | pf_start, 2, 0x90, pkt_sz);
+		qdma_register_write(vf_perf, (pci_bus << 12) | (pci_dev << 4) | pf_start, 2, 0x50, cmptsz);
+		qdma_register_write(vf_perf, (pci_bus << 12) | (pci_dev << 4) | pf_start, 2, 0x90, pkt_sz);
 		usleep(1000);
 	}
 	base = 0;
@@ -189,7 +196,7 @@ void FpgaPcieDeviceAsyncIO::create_thread_info(void) {
 					sem_init(&_info[base].llock, 0, 1);
 					_info[base].fd = last_fd;
 					if (q_ctrl != 0) {
-						//last_fd = setup_thrd_env(&_info[base], is_new_fd);
+						last_fd = setup_thrd_env(&_info[base], is_new_fd);
 					}
 					_info[base].thread_id = base;
 					base++;
@@ -197,4 +204,226 @@ void FpgaPcieDeviceAsyncIO::create_thread_info(void) {
       }
     }
   }
+}
+
+int FpgaPcieDeviceAsyncIO::setup_thrd_env(struct io_info *_info, unsigned char is_new_fd) {
+	int s;
+
+	/* add queue */
+	s = qdma_add_queue(vf_perf, _info);
+	if (s < 0) {
+		exit(1);
+	}
+	_info->q_added++;
+
+	/* start queue */
+	s = qdma_start_queue(vf_perf, _info);
+	if (s < 0)
+		exit(1);
+	_info->q_started++;
+
+	if (is_new_fd) {
+		char node[25] = {'\0'};
+
+		snprintf(node, 25, "/dev/%s", _info->q_name);
+		_info->fd = open(node, O_RDWR);
+		if (_info->fd < 0) {
+			printf("Error: Cannot find %s\n", node);
+			exit(1);
+		}
+	}
+
+	s = ioctl(_info->fd, 0, &no_memcpy);
+	if (s != 0) {
+		printf("failed to set non memcpy\n");
+		exit(1);
+	}
+
+	return _info->fd;
+}
+
+int FpgaPcieDeviceAsyncIO::qdma_add_queue(unsigned char is_vf, struct io_info *info) {
+	struct xcmd_info xcmd;
+	int ret;
+
+	memset(&xcmd, 0, sizeof(struct xcmd_info));
+	ret = qdma_prepare_q_add(&xcmd, is_vf, info);
+	if (ret < 0)
+		return ret;
+
+	ret = qdma_q_add(&xcmd);
+	if (ret < 0)
+		printf("Q_ADD failed, ret :%d\n", ret);
+
+	return ret;
+}
+
+int FpgaPcieDeviceAsyncIO::qdma_start_queue(unsigned char is_vf, struct io_info *info) {
+	struct xcmd_info xcmd;
+	int ret;
+
+	memset(&xcmd, 0, sizeof(struct xcmd_info));
+	ret = qdma_prepare_q_start(&xcmd, is_vf, info);
+	if (ret < 0)
+		return ret;
+
+	ret = qdma_q_start(&xcmd);
+	if (ret < 0)
+		printf("Q_START failed, ret :%d\n", ret);
+
+	return ret;
+}
+
+int FpgaPcieDeviceAsyncIO::qdma_prepare_q_add(struct xcmd_info *xcmd,
+		unsigned char is_vf, struct io_info *info) {
+	struct xcmd_q_parm *qparm;
+
+	if (!xcmd) {
+		printf("Error: Invalid Input Param\n");
+		return -EINVAL;
+	}
+
+	qparm = &xcmd->req.qparm;
+
+	xcmd->op = XNL_CMD_Q_ADD;
+	xcmd->vf = is_vf;
+	xcmd->if_bdf = info->pf;
+	xcmd->log_msg_dump = xnl_dump_response;
+	qparm->idx = info->qid;
+	qparm->num_q = 1;
+
+	if (info->mode == Q_MODE_MM)
+		qparm->flags |= XNL_F_QMODE_MM;
+	else if (info->mode == Q_MODE_ST)
+		qparm->flags |= XNL_F_QMODE_ST;
+	else
+		return -EINVAL;
+
+	if (info->dir == Q_DIR_H2C)
+		qparm->flags |= XNL_F_QDIR_H2C;
+	else if (info->dir == Q_DIR_C2H)
+		qparm->flags |= XNL_F_QDIR_C2H;
+	else
+		return -EINVAL;
+
+	qparm->sflags = qparm->flags;
+
+	return 0;
+}
+
+int FpgaPcieDeviceAsyncIO::qdma_prepare_q_start(struct xcmd_info *xcmd, unsigned char is_vf, struct io_info *info) {
+	struct xcmd_q_parm *qparm;
+	unsigned int f_arg_set = 0;
+
+	if (!xcmd) {
+		printf("Error: Invalid Input Param\n");
+		return -EINVAL;
+	}
+	qparm = &xcmd->req.qparm;
+
+	xcmd->op = XNL_CMD_Q_START;
+	xcmd->vf = is_vf;
+	xcmd->if_bdf = info->pf;
+	xcmd->log_msg_dump = xnl_dump_response;
+	qparm->idx = info->qid;
+	qparm->num_q = 1;
+	f_arg_set |= 1 << QPARM_IDX;
+	qparm->fetch_credit = Q_ENABLE_C2H_FETCH_CREDIT;
+
+	if (info->mode == Q_MODE_MM)
+		qparm->flags |= XNL_F_QMODE_MM;
+	else if (info->mode == Q_MODE_ST)
+		qparm->flags |= XNL_F_QMODE_ST;
+	else
+		return -EINVAL;
+	f_arg_set |= 1 << QPARM_MODE;
+	if (info->dir == Q_DIR_H2C)
+		qparm->flags |= XNL_F_QDIR_H2C;
+	else if (info->dir == Q_DIR_C2H)
+		qparm->flags |= XNL_F_QDIR_C2H;
+	else
+		return -EINVAL;
+
+	f_arg_set |= 1 << QPARM_DIR;
+	qparm->qrngsz_idx = info->idx_rngsz;
+	f_arg_set |= 1 << QPARM_RNGSZ_IDX;
+	if ((info->dir == Q_DIR_C2H) && (info->mode == Q_MODE_ST)) {
+		if (cmptsz)
+			qparm->cmpt_entry_size = info->cmptsz;
+		else
+			qparm->cmpt_entry_size = XNL_ST_C2H_CMPT_DESC_SIZE_8B;
+		f_arg_set |= 1 << QPARM_CMPTSZ;
+		qparm->cmpt_tmr_idx = info->idx_tmr;
+		f_arg_set |= 1 << QPARM_CMPT_TMR_IDX;
+		qparm->cmpt_cntr_idx = info->idx_cnt;
+		f_arg_set |= 1 << QPARM_CMPT_CNTR_IDX;
+
+		if (!strcmp(info->trig_mode, "every"))
+			qparm->cmpt_trig_mode = 1;
+		else if (!strcmp(info->trig_mode, "usr_cnt"))
+			qparm->cmpt_trig_mode = 2;
+		else if (!strcmp(info->trig_mode, "usr"))
+			qparm->cmpt_trig_mode = 3;
+		else if (!strcmp(info->trig_mode, "usr_tmr"))
+			qparm->cmpt_trig_mode=4;
+		else if (!strcmp(info->trig_mode, "cntr_tmr"))
+			qparm->cmpt_trig_mode=5;
+		else if (!strcmp(info->trig_mode, "dis"))
+			qparm->cmpt_trig_mode = 0;
+		else {
+			printf("Error: unknown q trigmode %s.\n", info->trig_mode);
+			return -EINVAL;
+		}
+		f_arg_set |= 1 << QPARM_CMPT_TRIG_MODE;
+		if (pfetch_en)
+			qparm->flags |= XNL_F_PFETCH_EN;
+	}
+
+	if (info->mode == Q_MODE_MM) {
+		qparm->mm_channel = info->mm_chnl;
+		f_arg_set |= 1 <<QPARM_MM_CHANNEL;
+	}
+
+
+	if ((info->dir == Q_DIR_H2C) && (info->mode == Q_MODE_MM)) {
+		if (keyhole_en) {
+			qparm->aperture_sz = info->aperture_sz;
+			f_arg_set |= 1 << QPARM_KEYHOLE_EN;
+		}
+	}
+
+	qparm->flags |= (XNL_F_CMPL_STATUS_EN | XNL_F_CMPL_STATUS_ACC_EN |
+			XNL_F_CMPL_STATUS_PEND_CHK | XNL_F_CMPL_STATUS_DESC_EN |
+			XNL_F_FETCH_CREDIT);
+
+	qparm->sflags = f_arg_set;
+	return 0;
+}
+
+int FpgaPcieDeviceAsyncIO::qdma_register_write(unsigned char is_vf,
+		unsigned int pf, int bar, unsigned long reg,
+		unsigned long value) {
+	struct xcmd_info xcmd;
+	struct xcmd_reg *regcmd;
+	int ret;
+
+	memset(&xcmd, 0, sizeof(struct xcmd_info));
+
+	regcmd = &xcmd.req.reg;
+	xcmd.op = XNL_CMD_REG_WRT;
+	xcmd.vf = is_vf;
+	xcmd.if_bdf = pf;
+	xcmd.log_msg_dump = xnl_dump_response;
+	regcmd->bar = bar;
+	regcmd->reg = reg;
+	regcmd->val = value;
+	regcmd->sflags = XCMD_REG_F_BAR_SET |
+		XCMD_REG_F_REG_SET |
+		XCMD_REG_F_VAL_SET;
+
+	ret = qdma_reg_write(&xcmd);
+	if (ret < 0)
+		printf("QDMA_REG_WRITE Failed, ret :%d\n", ret);
+
+	return ret;
 }

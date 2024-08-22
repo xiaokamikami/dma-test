@@ -1,0 +1,30 @@
+# C++ 编译器
+CXX = g++
+
+# C++ 编译标志
+CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon
+# 包含目录
+INCLUDES = -I../include
+
+# C++ 源文件
+SOURCES = xdma_test.cpp
+
+
+# 需要链接的库
+LIBS = -lrt -laio -lpthread
+
+# 程序名称
+PROGNAME = xdma_test
+
+# 默认目标
+all: $(PROGNAME)
+
+# 清理规则
+clean:
+	rm -f $(PROGNAME)
+
+# 编译和链接规则
+$(PROGNAME): $(SOURCES)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS) $(LIBS) $(DMA_UTILS_OBJS)
+
+.PHONY: all clean

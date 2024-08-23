@@ -275,25 +275,5 @@ typedef struct {
   DifftestVecWriteback           wb_vec[128];
 } DiffTestState;
 
-
-class DiffStateBuffer {
-public:
-  virtual ~DiffStateBuffer() {}
-  virtual DiffTestState* get(int zone, int index) = 0;
-  virtual DiffTestState* next() = 0;
-  virtual void switch_zone() = 0;
-};
-
-extern DiffStateBuffer** diffstate_buffer;
-
-extern void diffstate_buffer_init();
-extern void diffstate_buffer_free();
-
-
-#ifdef CONFIG_DIFFTEST_PERFCNT
-void diffstate_perfcnt_init();
-void diffstate_perfcnt_finish(long long msec);
-#endif // CONFIG_DIFFTEST_PERFCNT
-
 #endif // __DIFFSTATE_H__
 

@@ -14,12 +14,11 @@
 
 #include "diffstate.h"
 
-//#define HAVE_FPGA
 #define DEVICE_NAME_DEFAULT "/dev/xdma0_c2h_0"
 #define FIFO_SIZE (16 * 1024 * 1024) // 16M
 #define BLOCK_SIZE 4096  // 4K 对齐
 #define NUM_BLOCKS (FIFO_SIZE / BLOCK_SIZE)
-#define TEST_NUM  (NUM_BLOCKS * 10000)
+#define TEST_NUM  (NUM_BLOCKS * 40000)
 
 DiffTestState diffteststate;
 
@@ -220,7 +219,7 @@ int main() {
 #ifdef HAVE_FPGA
         std::cout << "XDMA Stream rate = "; 
 #else
-        std::cout << "The theoretical rate of a thread = "; 
+        std::cout << "The C2H theoretical rate of a thread = "; 
 #endif
         std::cout << rate_bytes / 1024 / 1024 << "MB/s" << std::endl;
     } catch (const std::exception& e) {

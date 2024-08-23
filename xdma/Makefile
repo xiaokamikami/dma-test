@@ -1,17 +1,23 @@
 # C++ 编译器
 CXX = g++
 
+FPGA?=0
+
 # C++ 编译标志
-CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon
+CXXFLAGS = -Wextra -pedantic -O2 -fpermissive -fcommon
 # 包含目录
 INCLUDES = -I../include
 
 # C++ 源文件
 SOURCES = xdma_test.cpp
 
-
 # 需要链接的库
-LIBS = -lrt -laio -lpthread
+LIBS = -lrt -lpthread
+
+ifeq ($(FPGA),1)
+	CXXFLAGS += -DHAVE_FPGA
+	LIBS += -laio
+endif
 
 # 程序名称
 PROGNAME = xdma_test

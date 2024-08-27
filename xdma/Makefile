@@ -4,7 +4,7 @@ CXX = g++
 FPGA?=0
 
 # C++ 编译标志
-CXXFLAGS = -Wextra -pedantic -O2 -fpermissive -fcommon
+CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon
 # 包含目录
 INCLUDES = -I../include
 
@@ -31,6 +31,6 @@ clean:
 
 # 编译和链接规则
 $(PROGNAME): $(SOURCES)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS) $(LIBS) $(DMA_UTILS_OBJS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS) $(LIBS)
 
 .PHONY: all clean

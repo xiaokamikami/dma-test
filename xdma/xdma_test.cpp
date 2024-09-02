@@ -11,11 +11,17 @@
 #include <string.h>
 #include <time.h>
 #include <functional>
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
 
 #include "dma_mmpool.cpp"
 #include "diffstate.h"
 
-#define DEVICE_NAME_DEFAULT "/dev/xdma0_c2h_0"
+#define DEVICE_C2H_NAME "/dev/xdma0_c2h_0"
+#define DEVICE_H2C_NAME "/dev/xdma0_h2c_0"
+#define TEST_NUM (8000000ll / (BLOCK_SIZE / 4096))
+//#define LOOP_BACK
 
 DiffTestState diffteststate;
 MemoryPool memory_pool;
@@ -24,13 +30,43 @@ std::mutex test_mtx;
 std::condition_variable test_cv;
 
 uint64_t stream_receiver_cout = 0;
+unsigned char *dma_mem = NULL;
+
 
 class StreamReceiver {
 public:
     // 构造函数：初始化StreamReceiver对象
-    StreamReceiver(const char* xdma_path)
-        : running(false),
-          xdma_path(xdma_path) {
+    StreamReceiver()
+        : running(false) {
+#ifdef HAVE_FPGA
+        xdma_c2h_fd = open(DEVICE_C2H_NAME, O_RDONLY);
+        if (xdma_c2h_fd == -1) {
+            std::cout << DEVICE_C2H_NAME << std::endl;
+            perror("Failed to open XDMA device");
+            exit(-1);
+        }
+        std::cout << "XDMA link " << DEVICE_C2H_NAME << std::endl;
+        xdma_h2c_fd = open(DEVICE_H2C_NAME, O_WRONLY);
+        if (xdma_h2c_fd == -1) {
+            std::cout << DEVICE_H2C_NAME << std::endl;
+            perror("Failed to open XDMA device");
+            exit(-1);
+        }
+        std::cout << "XDMA link " << DEVICE_H2C_NAME << std::endl;
+
+        // dma_mem = (unsigned char *)mmap(NULL, 4096, PROT_READ, MAP_SHARED,
+        //     xdma_c2h_fd, 0);
+        // if (dma_mem == MAP_FAILED) {
+        //     close(xdma_c2h_fd);
+        //     perror("Failed to open XDMA mmap");    
+        //     exit(-1);
+        // }
+
+        // int xdma_event = open("/dev/xdma0_events_0", O_RDWR);
+        // if (xdma_event == -1) {
+        //     throw std::runtime_error("Failed to open XDMA event device");
+        // }
+#endif
     }
 
     // 析构函数：确保资源被正确释放
@@ -41,13 +77,6 @@ public:
     // 启动流接收和处理
     void start() {
         if (running.exchange(true)) return; // 如果已经运行，直接返回
-
-#ifdef HAVE_FPGA
-        xdma_fd = open(xdma_path.c_str(), O_RDONLY);
-        if (xdma_fd < 0) {
-            throw std::runtime_error("Failed to open XDMA device");
-        }
-#endif
 
         receive_thread = std::thread(&StreamReceiver::receiveStream, this);
         process_thread = std::thread(&StreamReceiver::processData, this);
@@ -63,7 +92,8 @@ public:
         if (receive_thread.joinable()) receive_thread.join();
         if (process_thread.joinable()) process_thread.join();
 #ifdef HAVE_FPGA
-        close(xdma_fd);
+        close(xdma_c2h_fd);
+        close(xdma_h2c_fd);
 #endif
     }
 
@@ -73,15 +103,18 @@ private:
     std::thread receive_thread;  // 接收线程
     std::thread process_thread;  // 处理线程
 
-    std::string xdma_path;       // XDMA设备路径
-    int xdma_fd;                 // XDMA文件描述符
+    int xdma_c2h_fd;             // XDMA文件描述符
+    int xdma_h2c_fd;
 
     // 接收流数据
     void receiveStream() {
+        #ifdef HAVE_FPGA
+            size_t w_bytes = write(xdma_h2c_fd, "1", 1);
+        #endif
         while (running) {
             char *memory = memory_pool.get_free_chunk();
         #ifdef HAVE_FPGA
-            read(xdma_fd, memory, BLOCK_SIZE);
+            size_t size = read(xdma_c2h_fd, memory, BLOCK_SIZE);
         #else
             memset(memory, 1, BLOCK_SIZE);
         #endif
@@ -93,14 +126,19 @@ private:
     void processData() {
         while (running) {
             const char *memory = memory_pool.get_busy_chunk();
+
+        #if defined (HAVE_FPGA) & defined(LOOP_BACK)
+            write(xdma_h2c_fd, memory, BLOCK_SIZE);
+        #else
             memcpy(&diffteststate, memory, sizeof(diffteststate));
+        #endif
 
             stream_receiver_cout ++;
             memory_pool.set_free_chunk();
             if (stream_receiver_cout >= TEST_NUM) {
-            printf("Reaching the statistical upper limit\n");
-            std::lock_guard<std::mutex> lock(test_mtx);
-            test_cv.notify_all();
+                printf("Reaching the statistical upper limit\n");
+                std::lock_guard<std::mutex> lock(test_mtx);
+                test_cv.notify_all();
             }
         }
     }
@@ -109,7 +147,7 @@ private:
 int main() {
     struct timespec ts_start, ts_end;
     try {
-        StreamReceiver receiver(DEVICE_NAME_DEFAULT);
+        StreamReceiver receiver;
         clock_gettime(CLOCK_MONOTONIC, &ts_start);
         receiver.start();
 
@@ -124,7 +162,8 @@ int main() {
 		double time_consum = (ts_end.tv_sec - ts_start.tv_sec) + 
                      ((ts_end.tv_nsec - ts_start.tv_nsec) / (double)1000000000);
         std::cout << "Program time consumption: " << time_consum << " S"
-                  << " Transfer block: " << stream_receiver_cout << std::endl;
+                  << " Transfer block: " << stream_receiver_cout << " Size per receive: " << BLOCK_SIZE
+                  << std::endl;
         // Pref
         uint64_t receive_bytes = BLOCK_SIZE * stream_receiver_cout;
         uint64_t rate_bytes = receive_bytes / time_consum;

@@ -4,11 +4,12 @@
 #include <atomic>
 #include <memory>
 #include <functional>
-#define FIFO_SIZE 4096 * 1024// 4M page
-#define BLOCK_SIZE 4096  // 4K packge
+#define FIFO_SIZE 4096 * 1024 // 4M fifo
+#define PAGE_SIZE 4096  // 4K packge
+#define BLOCK_SIZE PAGE_SIZE * 50// one receive size
 #define NUM_BLOCKS (FIFO_SIZE / BLOCK_SIZE)
 #define REM_NUM_BLOCKS (NUM_BLOCKS - 1)
-#define TEST_NUM  (40000000)
+
 extern bool running;
 class MemoryPool {
 public:
@@ -92,7 +93,7 @@ private:
 
         MemoryBlock() : is_free(true) {
             void* ptr = nullptr;
-            if (posix_memalign(&ptr, BLOCK_SIZE, BLOCK_SIZE * 2) != 0) {
+            if (posix_memalign(&ptr, 4096, 4096 + BLOCK_SIZE) != 0) {
                 throw std::runtime_error("Failed to allocate aligned memory");
             }
             data = std::unique_ptr<char, std::function<void(char*)>>(

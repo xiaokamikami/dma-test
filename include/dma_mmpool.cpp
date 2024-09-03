@@ -6,7 +6,7 @@
 #include <functional>
 #define FIFO_SIZE 4096 * 1024 // 4M fifo
 #define PAGE_SIZE 4096  // 4K packge
-#define BLOCK_SIZE PAGE_SIZE * 50// one receive size
+#define BLOCK_SIZE PAGE_SIZE * 32// one receive size 32KB
 #define NUM_BLOCKS (FIFO_SIZE / BLOCK_SIZE)
 #define REM_NUM_BLOCKS (NUM_BLOCKS - 1)
 

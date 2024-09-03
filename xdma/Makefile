@@ -2,9 +2,10 @@
 CXX = g++
 
 FPGA?=0
+DMA_CHANNS?=1
 
 # C++ 编译标志
-CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon
+CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon -DDMA_CHANNS=$(DMA_CHANNS)
 # 包含目录
 INCLUDES = -I../include
 
@@ -23,7 +24,7 @@ endif
 PROGNAME = xdma_test
 
 # 默认目标
-all: $(PROGNAME)
+all: clean $(PROGNAME)
 
 # 清理规则
 clean:

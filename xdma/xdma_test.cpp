@@ -18,20 +18,18 @@
 #include "dma_mmpool.cpp"
 #include "diffstate.h"
 
-#define DEVICE_C2H_NAME "/dev/xdma0_c2h_0"
-#define DEVICE_H2C_NAME "/dev/xdma0_h2c_0"
+#define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
+#define DEVICE_H2C_NAME "/dev/xdma0_h2c_"
 #define TEST_NUM (8000000ll / (BLOCK_SIZE / 4096))
-//#define LOOP_BACK
+#define LOOP_BACK
 
 DiffTestState diffteststate;
-MemoryPool memory_pool;
+MemoryPool memory_pool[DMA_CHANNS];
 
 std::mutex test_mtx;
 std::condition_variable test_cv;
-
-uint64_t stream_receiver_cout = 0;
+std::atomic <uint64_t> stream_receiver_cout = 0;
 unsigned char *dma_mem = NULL;
-
 
 class StreamReceiver {
 public:
@@ -39,33 +37,25 @@ public:
     StreamReceiver()
         : running(false) {
 #ifdef HAVE_FPGA
-        xdma_c2h_fd = open(DEVICE_C2H_NAME, O_RDONLY);
-        if (xdma_c2h_fd == -1) {
-            std::cout << DEVICE_C2H_NAME << std::endl;
+    for(int i = 0; i < DMA_CHANNS;i ++) {
+        char c2h_device[64],h2c_device[64];
+        sprintf(c2h_device,"%s%d",DEVICE_C2H_NAME,i);
+        sprintf(h2c_device,"%s%d",DEVICE_H2C_NAME,i);  
+        xdma_c2h_fd[i] = open(c2h_device, O_RDONLY );
+        if (xdma_c2h_fd[i] == -1) {
+            std::cout << c2h_device << std::endl;
             perror("Failed to open XDMA device");
             exit(-1);
         }
-        std::cout << "XDMA link " << DEVICE_C2H_NAME << std::endl;
-        xdma_h2c_fd = open(DEVICE_H2C_NAME, O_WRONLY);
-        if (xdma_h2c_fd == -1) {
-            std::cout << DEVICE_H2C_NAME << std::endl;
+        std::cout << "XDMA link " << c2h_device << std::endl;
+        xdma_h2c_fd[i] = open(h2c_device, O_WRONLY);
+        if (xdma_h2c_fd[i] == -1) {
+            std::cout << h2c_device << std::endl;
             perror("Failed to open XDMA device");
             exit(-1);
         }
-        std::cout << "XDMA link " << DEVICE_H2C_NAME << std::endl;
-
-        // dma_mem = (unsigned char *)mmap(NULL, 4096, PROT_READ, MAP_SHARED,
-        //     xdma_c2h_fd, 0);
-        // if (dma_mem == MAP_FAILED) {
-        //     close(xdma_c2h_fd);
-        //     perror("Failed to open XDMA mmap");    
-        //     exit(-1);
-        // }
-
-        // int xdma_event = open("/dev/xdma0_events_0", O_RDWR);
-        // if (xdma_event == -1) {
-        //     throw std::runtime_error("Failed to open XDMA event device");
-        // }
+        std::cout << "XDMA link " << h2c_device << std::endl;
+    }
 #endif
     }
 
@@ -77,9 +67,10 @@ public:
     // 启动流接收和处理
     void start() {
         if (running.exchange(true)) return; // 如果已经运行，直接返回
-
-        receive_thread = std::thread(&StreamReceiver::receiveStream, this);
-        process_thread = std::thread(&StreamReceiver::processData, this);
+        for(int i = 0; i < DMA_CHANNS;i ++) {
+            receive_thread[i] = std::thread(&StreamReceiver::receiveStream, this, i);
+            process_thread[i] = std::thread(&StreamReceiver::processData, this, i);
+        }
     }
 
     // 停止流接收和处理
@@ -87,54 +78,55 @@ public:
         if (!running.exchange(false)) return; // 如果已经停止，直接返回
 
         // 通知线程停止
-        memory_pool.stopMemoryPool();
-
-        if (receive_thread.joinable()) receive_thread.join();
-        if (process_thread.joinable()) process_thread.join();
+        for(int i = 0; i < DMA_CHANNS;i ++) {
+            memory_pool[i].stopMemoryPool();
+            if (receive_thread[i].joinable()) receive_thread[i].join();
+            if (process_thread[i].joinable()) process_thread[i].join();
 #ifdef HAVE_FPGA
-        close(xdma_c2h_fd);
-        close(xdma_h2c_fd);
+            close(xdma_c2h_fd[i]);
+            close(xdma_h2c_fd[i]);
 #endif
+        }
     }
 
 private:
-    std::atomic<bool> running;             // 运行标志
+    std::atomic<bool> running;   // 运行标志
 
-    std::thread receive_thread;  // 接收线程
-    std::thread process_thread;  // 处理线程
+    std::thread receive_thread[DMA_CHANNS];  // 接收线程
+    std::thread process_thread[DMA_CHANNS];  // 处理线程
 
-    int xdma_c2h_fd;             // XDMA文件描述符
-    int xdma_h2c_fd;
+    int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
+    int xdma_h2c_fd[DMA_CHANNS];
 
     // 接收流数据
-    void receiveStream() {
+    void receiveStream(int channel) {
         #ifdef HAVE_FPGA
-            size_t w_bytes = write(xdma_h2c_fd, "1", 1);
+            size_t w_bytes = write(xdma_h2c_fd[channel], "1", 1);
         #endif
         while (running) {
-            char *memory = memory_pool.get_free_chunk();
+            char *memory = memory_pool[channel].get_free_chunk();
         #ifdef HAVE_FPGA
-            size_t size = read(xdma_c2h_fd, memory, BLOCK_SIZE);
+            size_t size = read(xdma_c2h_fd[channel], memory, BLOCK_SIZE);
         #else
             memset(memory, 1, BLOCK_SIZE);
         #endif
-            memory_pool.set_busy_chunk();
+            memory_pool[channel].set_busy_chunk();
         }
     }
 
     // 处理接收到的数据
-    void processData() {
+    void processData(int channel) {
         while (running) {
-            const char *memory = memory_pool.get_busy_chunk();
+            const char *memory = memory_pool[channel].get_busy_chunk();
 
         #if defined (HAVE_FPGA) & defined(LOOP_BACK)
-            write(xdma_h2c_fd, memory, BLOCK_SIZE);
+            write(xdma_h2c_fd[channel], memory, BLOCK_SIZE);
         #else
             memcpy(&diffteststate, memory, sizeof(diffteststate));
         #endif
 
             stream_receiver_cout ++;
-            memory_pool.set_free_chunk();
+            memory_pool[channel].set_free_chunk();
             if (stream_receiver_cout >= TEST_NUM) {
                 printf("Reaching the statistical upper limit\n");
                 std::lock_guard<std::mutex> lock(test_mtx);

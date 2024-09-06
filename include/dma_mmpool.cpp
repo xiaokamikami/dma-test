@@ -60,8 +60,7 @@ public:
         cv_filled.notify_all();
     }
 
-
-    // 检测一个空闲块并上锁 返回空闲块的指针
+    // 获取下一个块并上锁 返回空闲块的指针
     char *get_free_chunk() {
         page_head = (write_index++) & REM_NUM_BLOCKS;
         {
@@ -75,7 +74,6 @@ public:
     }
 
     void set_busy_chunk() {
-        memory_pool[page_head].is_free = false;
         block_mutexes[page_head].unlock();
         cv_filled.notify_one();
         ++filled_blocks;
@@ -94,7 +92,6 @@ public:
     }
 
     void set_free_chunk() {
-        memory_pool[page_end].is_free = true;
         block_mutexes[page_end].unlock();
         cv_empty.notify_one();
         ++empty_blocks;
@@ -136,32 +133,47 @@ public:
 
     // 初始化内存池
     void initMemoryPool() {
-
+        for (size_t i = 0; i < NUM_BLOCKS; ++i) {
+            memory_pool[i].is_free = true;
+        }
     }
 
     // 清理内存池
     void cleanupMemoryPool() {
-        cv_group.notify_all();
+        cv_empty.notify_all();
+        cv_filled.notify_all();
     }
 
     void stopMemoryPool() {
-        cv_group.notify_all();
+        cv_empty.notify_all();
+        cv_filled.notify_all();
     }
 
     // 获得一个空闲组的指定空闲块 返回空闲块的指针
     char *get_free_chunk(uint8_t idx) {
-        write_index ++;
         page_w_idx = idx + grouping_w_offset;
-        if (memory_pool[page_w_idx].is_free = false) {
-            printf("This block has been written, and there is a duplicate packge idx");
-            exit(-1);
+        printf("get chunk %d counst %d\n", idx, page_w_idx);
+
+        // 当前窗口对应位置已满 写入下一个窗口
+        if (memory_pool[page_w_idx].is_free == false) {
+            write_next_index.fetch_add(1);
+            page_w_idx = idx + (((grouping_w_idx + 1) & REM_MAX_GROUPING_IDX) * MAX_IDX);
+            // 第二次查找失败
+            if (memory_pool[page_w_idx].is_free == false) {
+                printf("This block has been written, and there is a duplicate packge idx %d\n", idx);
+                return nullptr;
+            }
+        } else {
+            write_index.fetch_add(1);
         }
 
         // 进入到下一个分组
-        if (write_index == MAX_IDX) {
-            write_index = 0;
+        if (write_index.load() == MAX_IDX) {
+            printf("grouping_w_idx full %d \n", grouping_w_idx & REM_MAX_GROUPING_IDX);
             wait_next_free_group();
-            grouping_w_offset = (grouping_w_idx & REM_MAX_GROUPING_IDX) * write_index;
+            grouping_w_offset = (grouping_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX + write_next_index.load();
+            write_index = write_next_index.load();
+            write_next_index = 0;
         }
         memory_pool[page_w_idx].is_free = false;
         return memory_pool[page_w_idx].data.get();
@@ -170,12 +182,13 @@ public:
     // 获取最前面的内存
     const char *get_busy_chunk() {
         page_r_idx = read_index + grouping_r_offset;
-        if (read_index == MAX_IDX) {
+        if (read_index.load() == MAX_IDX) {
             read_index = 0;
             wait_next_group();
-            grouping_r_offset = (grouping_r_idx & REM_MAX_GROUPING_IDX) * read_index;
+            printf("grouping_r_idx %d \n", grouping_r_idx & REM_MAX_GROUPING_IDX);
+            grouping_r_offset = (grouping_r_idx & REM_MAX_GROUPING_IDX) * read_index.load();
         }
-        read_index ++;
+        read_index.fetch_add(1);
         return memory_pool[page_r_idx].data.get();
     }
 
@@ -185,12 +198,12 @@ public:
 
     // 等待空闲内存块
     bool wait_next_free_group() {
-        grouping_w_idx ++;
-        cv_group.notify_one();
+        grouping_w_idx.fetch_add(1);
+        cv_filled.notify_one();
         if ((grouping_w_idx - grouping_r_idx) == (MAX_IDX - 1)) {
             std::unique_lock<std::mutex> lock(block_mutexes);
-            printf("lock grouping_w_idx - grouping_r_idx \n");
-            cv_group.wait(lock, [this] { return (grouping_w_idx - grouping_r_idx) == (MAX_IDX - 1);});
+            printf("[next_free_group]lock grouping_w_idx - grouping_r_idx \n");
+            cv_empty.wait(lock, [this] { return (grouping_w_idx - grouping_r_idx) == (MAX_IDX - 1);});
         }
         return true;
     }
@@ -199,23 +212,25 @@ public:
         if (grouping_w_idx == grouping_r_idx) {
             std::unique_lock<std::mutex> lock(block_mutexes);
             printf("lock grouping_w_idx == grouping_r_idx \n");
-            cv_group.wait(lock, [this] { return grouping_w_idx > grouping_r_idx;});
+            cv_filled.wait(lock, [this] { return grouping_w_idx > grouping_r_idx;});
         }
         grouping_r_idx ++;
-        cv_group.notify_one();
+        cv_empty.notify_one();
         return true;
     }
     //检查有无数据块可用
     bool check_group() {
-        printf("w_idx %ld r_idx %ld\n",grouping_w_idx.load(), grouping_r_idx.load());
-        return (grouping_w_idx > grouping_r_idx) ? true : false;
+        bool result = (grouping_w_idx > grouping_r_idx) ? true : false;
+        //printf("w_idx %ld r_idx %ld\n",grouping_w_idx.load(), grouping_r_idx.load());
+        return result;
     }
 
 private:
 
     MemoryBlock memory_pool[NUM_BLOCKS];  // 内存池
     std::mutex block_mutexes;
-    std::condition_variable cv_group;      // 空闲条件变量
+    std::condition_variable cv_empty;      // 空闲块条件变量
+    std::condition_variable cv_filled;     // 已填充块条件变量
     std::atomic<size_t> empty_blocks = NUM_BLOCKS;     // 空闲块计数
     std::atomic<size_t> grouping_r_offset = 0; // 当前消费者使用的偏移量
     std::atomic<size_t> grouping_w_offset = 0; // 当前生产者使用的偏移量
@@ -223,6 +238,7 @@ private:
     std::atomic<uint64_t> grouping_r_idx = 0;
     std::atomic<size_t> filled_blocks;     // 已填充块计数
     std::atomic<size_t> write_index;       // 写入索引
+    std::atomic<size_t> write_next_index;
     std::atomic<size_t> read_index;        // 读取索引
 
     size_t page_w_idx = 0;

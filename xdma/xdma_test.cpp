@@ -21,8 +21,8 @@
 
 #define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
 #define DEVICE_H2C_NAME "/dev/xdma0_h2c_"
-#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
-//#define TEST_NUM  255
+//#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
+#define TEST_NUM  255
 #define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -30,7 +30,7 @@
 
 typedef struct {
     uint8_t pack_indx;
-    DiffTestState diffteststate;
+    char data[4095];
 } DmaPackge;
 DmaPackge test_packge;
 
@@ -79,7 +79,17 @@ public:
     // 启动流接收和处理
     void start() {
         if (running.exchange(true)) return; // 如果已经运行，直接返回
-        printf("DiffTestState Size %d \n",sizeof(DiffTestState));
+        printf("DMA packge Size %d \n",sizeof(DmaPackge));
+        // 清除XDMA硬件缓存
+        DmaPackge send_packg_full;
+        send_packg_full.pack_indx = 0;
+        for (int i = 0; i < 8; i++) {
+            write(xdma_h2c_fd, &send_packg_full, sizeof(send_packg_full));
+        }
+        // for (int i = 0; i < 4; i++) {
+        //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
+        //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
+        // }
         for(int i = 0; i < DMA_CHANNS;i ++) {
             printf("start c2h channel %d \n", i);
             receive_thread[i] = std::thread(&StreamReceiver::receiveStream, this, i);
@@ -109,6 +119,8 @@ public:
 private:
     std::atomic<bool> running;   // 运行标志
 
+    std::atomic<uint64_t> send_packgs;   // 当前待回收数据量
+
     std::thread receive_thread[DMA_CHANNS];  // 接收线程
     std::thread process_thread;  // 处理线程
 
@@ -124,22 +136,26 @@ private:
 
     // 接收流数据
     void receiveStream(int channel) {
-        #ifdef HAVE_FPGA
-            size_t w_bytes = write(xdma_h2c_fd, "1", 1);
-        #endif
-        char *rdata = (char *)malloc(BLOCK_SIZE);
+        char *rdata = (char *)malloc(4096);
         while (running) {
     #ifdef HAVE_FPGA
-            //uint64_t lseek_size = channel * sizeof(DmaPackge);
-            //lseek(xdma_c2h_fd[channel], lseek_size, SEEK_SET);
+            uint64_t lseek_size = channel * sizeof(DmaPackge);
+            uint64_t addr = lseek(xdma_c2h_fd[channel], lseek_size, SEEK_SET);
+            while (send_packgs.load() == 0) {}
             size_t size = read(xdma_c2h_fd[channel], rdata, sizeof(DmaPackge));
+            send_packgs --;
         #ifdef LOOP_BACK
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
-            //printf("get dma packge channel-%d idx %d \n", channel, idx);
+            printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
             char *memory = memory_idx_pool.get_free_chunk(idx);
-            memcpy(memory, &packet->diffteststate, sizeof(DmaPackge));
+            if (memory == nullptr) {
+                stream_receiver_cout == TEST_NUM;
+                printf("It should not be the case that no available block can be found\n");
+                test_cv.notify_all();
+            }
+            memcpy(memory, packet, sizeof(DmaPackge));
         #endif
     #else
             memset(rdata, 1, BLOCK_SIZE);
@@ -152,25 +168,28 @@ private:
         static int get_diff_count = 0;
         while (running) {
         #if defined (HAVE_FPGA) && defined(LOOP_BACK)
-            DmaPackge send_packg[4];
-            encapsulation_packge(&send_packg[0]);encapsulation_packge(&send_packg[1]);
-            encapsulation_packge(&send_packg[2]);encapsulation_packge(&send_packg[3]);
+            DmaPackge send_packg[DMA_CHANNS];
+            for (int i = 0; i < DMA_CHANNS; i++) {
+                encapsulation_packge(&send_packg[i]);
+                //printf("send pack id %d \n", send_packg[i].pack_indx);
+            }
+            while(send_packgs.load() > (7 - DMA_CHANNS)){}
             write(xdma_h2c_fd, send_packg, sizeof(send_packg));
-            //printf("send pack id %d \n", send_packg.pack_indx);
+            send_packgs += DMA_CHANNS;
             if(memory_idx_pool.check_group() == true) {
                 const char *memory = memory_idx_pool.get_busy_chunk();
-                memcpy(&test_packge, memory, sizeof(DiffTestState));
-                printf("get difftest %d\n",get_diff_count);
+                memcpy(&test_packge, memory, sizeof(DmaPackge));
+                printf("[processData]get difftest %d\n",test_packge.pack_indx);
                 get_diff_count ++;
+                memory_pool.set_free_chunk();
+                stream_receiver_cout ++;
             }
-
         #else
             const char *memory = memory_pool.get_busy_chunk();
             memcpy(&test_packge, memory, sizeof(DmaPackge));
             memory_pool.set_free_chunk();
-        #endif
-
             stream_receiver_cout ++;
+        #endif
 
             if (stream_receiver_cout >= TEST_NUM) {
                 printf("Reaching the statistical upper limit\n");

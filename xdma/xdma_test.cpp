@@ -15,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <shared_mutex>
+#include <cassert>
 
 #include "dma_mmpool.cpp"
 #include "diffstate.h"
@@ -22,7 +23,9 @@
 #define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
 #define DEVICE_H2C_NAME "/dev/xdma0_h2c_"
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
-#define TEST_NUM  255
+#define MAX_H2C_SIZE (128 / DMA_CHANNS)
+
+#define TEST_NUM  2048
 #define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -32,7 +35,7 @@ typedef struct {
     uint8_t pack_indx;
     char data[4095];
 } DmaPackge;
-DmaPackge test_packge;
+
 
 MemoryPool memory_pool;
 MemoryIdxPool memory_idx_pool;
@@ -82,8 +85,8 @@ public:
         printf("DMA packge Size %d \n",sizeof(DmaPackge));
         // 清除XDMA硬件缓存
         DmaPackge send_packg_full;
-        send_packg_full.pack_indx = 0;
-        for (int i = 0; i < 8; i++) {
+        memset(&send_packg_full, 0, sizeof(send_packg_full));
+        for (int i = 0; i < (MAX_H2C_SIZE / 4); i++) {
             write(xdma_h2c_fd, &send_packg_full, sizeof(send_packg_full));
         }
         // for (int i = 0; i < 4; i++) {
@@ -103,10 +106,9 @@ public:
         if (!running.exchange(false)) return; // 如果已经停止，直接返回
 
         // 通知线程停止
-        memory_pool.stopMemoryPool();
-        if (process_thread.joinable()) process_thread.join();
         for(int i = 0; i < DMA_CHANNS;i ++) {
             if (receive_thread[i].joinable()) receive_thread[i].join();
+            printf("receive %d STOP \n",i);
 #ifdef HAVE_FPGA
             close(xdma_c2h_fd[i]);
 #endif
@@ -114,6 +116,10 @@ public:
 #ifdef HAVE_FPGA
         close(xdma_h2c_fd);
 #endif
+        if (process_thread.joinable()) process_thread.join();
+        printf("process STOP \n");
+        memory_pool.stopMemoryPool();
+        printf("MEM STOP \n");
     }
 
 private:
@@ -130,8 +136,8 @@ private:
     // 生成测速数据包
     void encapsulation_packge(DmaPackge *send_packg) {
         static std::atomic<uint8_t> pack_indx = 0;
-        send_packg->pack_indx = pack_indx;
-        pack_indx ++;
+        send_packg->pack_indx = pack_indx.load();
+        pack_indx.fetch_add(1);
     }
 
     // 接收流数据
@@ -139,12 +145,12 @@ private:
         char *rdata = (char *)malloc(4096);
         while (running) {
     #ifdef HAVE_FPGA
+        #ifdef LOOP_BACK
             uint64_t lseek_size = channel * sizeof(DmaPackge);
             uint64_t addr = lseek(xdma_c2h_fd[channel], lseek_size, SEEK_SET);
-            while (send_packgs.load() == 0) {}
+        #endif
             size_t size = read(xdma_c2h_fd[channel], rdata, sizeof(DmaPackge));
-            send_packgs --;
-        #ifdef LOOP_BACK
+
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
@@ -154,43 +160,66 @@ private:
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
+                assert(0);
             }
             memcpy(memory, packet, sizeof(DmaPackge));
-        #endif
-    #else
-            memset(rdata, 1, BLOCK_SIZE);
+
+    #else // NO FPGA
+        DmaPackge send_packg;
+        while (send_packgs.load() > 512) {}
+        for (int i = 0; i < DMA_CHANNS; i++) {        //写入伪数据包
+            encapsulation_packge(&send_packg); 
+            uint8_t idx = send_packg.pack_indx;
+            //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
+            char *memory = memory_idx_pool.get_free_chunk(idx);
+            if (memory == nullptr) {
+                stream_receiver_cout == TEST_NUM;
+                printf("It should not be the case that no available block can be found\n");
+                test_cv.notify_all();
+                assert(0);
+            }
+            memcpy(memory, &send_packg, sizeof(DmaPackge));
+        }
+        send_packgs += DMA_CHANNS;
     #endif
+         if (stream_receiver_cout >= TEST_NUM)
+            return;
         }
     }
 
     // 处理接收到的数据
     void processData() {
         static int get_diff_count = 0;
+        static uint8_t recv_count = REM_MAX_IDX;
+        DmaPackge test_packge;
         while (running) {
-        #if defined (HAVE_FPGA) && defined(LOOP_BACK)
-            DmaPackge send_packg[DMA_CHANNS];
-            for (int i = 0; i < DMA_CHANNS; i++) {
-                encapsulation_packge(&send_packg[i]);
-                //printf("send pack id %d \n", send_packg[i].pack_indx);
+            if (recv_count == REM_MAX_IDX) {
+                while(memory_idx_pool.check_group() == false) {}
+                recv_count = 0;
             }
-            while(send_packgs.load() > (7 - DMA_CHANNS)){}
-            write(xdma_h2c_fd, send_packg, sizeof(send_packg));
-            send_packgs += DMA_CHANNS;
-            if(memory_idx_pool.check_group() == true) {
-                const char *memory = memory_idx_pool.get_busy_chunk();
-                memcpy(&test_packge, memory, sizeof(DmaPackge));
-                printf("[processData]get difftest %d\n",test_packge.pack_indx);
-                get_diff_count ++;
-                memory_pool.set_free_chunk();
-                stream_receiver_cout ++;
-            }
+            recv_count ++;
+        #ifdef HAVE_FPGA
+            #ifdef LOOP_BACK
+                DmaPackge send_packg[DMA_CHANNS];
+                for (int i = 0; i < DMA_CHANNS; i++) {
+                    encapsulation_packge(&send_packg[i]);
+                    //printf("send pack id %d \n", send_packg[i].pack_indx);
+                }
+                while(send_packgs.load() > (MAX_H2C_SIZE - DMA_CHANNS)){}
+                write(xdma_h2c_fd, send_packg, sizeof(send_packg));
+                send_packgs += DMA_CHANNS;
+            #endif
         #else
-            const char *memory = memory_pool.get_busy_chunk();
-            memcpy(&test_packge, memory, sizeof(DmaPackge));
-            memory_pool.set_free_chunk();
-            stream_receiver_cout ++;
+            send_packgs --;
         #endif
+            const char *memory = memory_idx_pool.get_busy_chunk();
+            memcpy(&test_packge, memory, sizeof(DmaPackge));
+            //printf("[processData]get difftest %d\n",test_packge.pack_indx);
+            get_diff_count ++;
+            stream_receiver_cout ++;
 
+            if (stream_receiver_cout % 100 == 0 && stream_receiver_cout > 0)
+                printf("stream_receiver_cout %d \n",stream_receiver_cout.load());
             if (stream_receiver_cout >= TEST_NUM) {
                 printf("Reaching the statistical upper limit\n");
                 std::lock_guard<std::mutex> lock(test_mtx);

@@ -25,7 +25,7 @@
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
-#define TEST_NUM  2048
+#define TEST_NUM  4096
 #define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -83,16 +83,18 @@ public:
     void start() {
         if (running.exchange(true)) return; // 如果已经运行，直接返回
         printf("DMA packge Size %d \n",sizeof(DmaPackge));
+#ifdef HAVE_FPGA
         // 清除XDMA硬件缓存
-        DmaPackge send_packg_full;
-        memset(&send_packg_full, 0, sizeof(send_packg_full));
-        for (int i = 0; i < (MAX_H2C_SIZE / 4); i++) {
-            write(xdma_h2c_fd, &send_packg_full, sizeof(send_packg_full));
-        }
+        // DmaPackge send_packg_full;
+        // memset(&send_packg_full, 0, sizeof(send_packg_full));
+        // for (int i = 0; i < (MAX_H2C_SIZE / 4); i++) {
+        //     write(xdma_h2c_fd, &send_packg_full, sizeof(send_packg_full));
+        // }
         // for (int i = 0; i < 4; i++) {
         //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
         //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
         // }
+#endif
         for(int i = 0; i < DMA_CHANNS;i ++) {
             printf("start c2h channel %d \n", i);
             receive_thread[i] = std::thread(&StreamReceiver::receiveStream, this, i);
@@ -133,6 +135,7 @@ private:
     int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
     int xdma_h2c_fd;
 
+    int send_flow_cout[DMA_CHANNS];
     // 生成测速数据包
     void encapsulation_packge(DmaPackge *send_packg) {
         static std::atomic<uint8_t> pack_indx = 0;
@@ -145,42 +148,46 @@ private:
         char *rdata = (char *)malloc(4096);
         while (running) {
     #ifdef HAVE_FPGA
-        #ifdef LOOP_BACK
             uint64_t lseek_size = channel * sizeof(DmaPackge);
             uint64_t addr = lseek(xdma_c2h_fd[channel], lseek_size, SEEK_SET);
-        #endif
             size_t size = read(xdma_c2h_fd[channel], rdata, sizeof(DmaPackge));
 
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
             printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
-            char *memory = memory_idx_pool.get_free_chunk(idx);
-            if (memory == nullptr) {
+            if (memory_idx_pool.write_free_chunk(idx, &rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
                 assert(0);
             }
-            memcpy(memory, packet, sizeof(DmaPackge));
-
     #else // NO FPGA
-        DmaPackge send_packg;
-        while (send_packgs.load() > 512) {}
-        for (int i = 0; i < DMA_CHANNS; i++) {        //写入伪数据包
+        DmaPackge send_packg;  
+        //写入伪数据包
+            bool flow_control = false;
+            size_t send_flow_cout_i = send_flow_cout[channel];
+            do{
+                for (int j = 0; j < DMA_CHANNS; j++) {
+                    if ((send_flow_cout_i - send_flow_cout[j]) > 5) {
+                        flow_control = true;
+                        break;
+                    }
+                }
+                flow_control = false;
+            } while (flow_control == true);
+
             encapsulation_packge(&send_packg); 
             uint8_t idx = send_packg.pack_indx;
             //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
-            char *memory = memory_idx_pool.get_free_chunk(idx);
-            if (memory == nullptr) {
+            if (memory_idx_pool.write_free_chunk(idx, (char *)&send_packg) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
                 assert(0);
             }
-            memcpy(memory, &send_packg, sizeof(DmaPackge));
-        }
-        send_packgs += DMA_CHANNS;
+            send_flow_cout[channel] ++;
+            send_packgs.fetch_add(DMA_CHANNS);
     #endif
          if (stream_receiver_cout >= TEST_NUM)
             return;
@@ -197,7 +204,6 @@ private:
                 while(memory_idx_pool.check_group() == false) {}
                 recv_count = 0;
             }
-            recv_count ++;
         #ifdef HAVE_FPGA
             #ifdef LOOP_BACK
                 DmaPackge send_packg[DMA_CHANNS];
@@ -207,17 +213,17 @@ private:
                 }
                 while(send_packgs.load() > (MAX_H2C_SIZE - DMA_CHANNS)){}
                 write(xdma_h2c_fd, send_packg, sizeof(send_packg));
-                send_packgs += DMA_CHANNS;
+                send_packgs.fetch_add(DMA_CHANNS);
             #endif
         #else
-            send_packgs --;
+            send_packgs.fetch_sub(1);
         #endif
-            const char *memory = memory_idx_pool.get_busy_chunk();
-            memcpy(&test_packge, memory, sizeof(DmaPackge));
+            //while(send_packgs.load() > 256) {}
+            memory_idx_pool.read_busy_chunk((char *)&test_packge);
             //printf("[processData]get difftest %d\n",test_packge.pack_indx);
             get_diff_count ++;
             stream_receiver_cout ++;
-
+            recv_count ++;
             if (stream_receiver_cout % 100 == 0 && stream_receiver_cout > 0)
                 printf("stream_receiver_cout %d \n",stream_receiver_cout.load());
             if (stream_receiver_cout >= TEST_NUM) {

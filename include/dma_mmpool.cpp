@@ -4,7 +4,7 @@
 #include <atomic>
 #include <memory>
 #include <functional>
-#define FIFO_SIZE 8192 * 1024 // 4M fifo
+#define FIFO_SIZE 4096 * 1024 // 4M fifo
 #define PAGE_SIZE 4096  // 4K packge
 #define BLOCK_SIZE PAGE_SIZE // one receive size 32KB
 #define NUM_BLOCKS (FIFO_SIZE / BLOCK_SIZE)
@@ -150,96 +150,97 @@ public:
     }
 
     // 获得一个空闲组的指定空闲块 返回空闲块的指针
-    char *get_free_chunk(uint8_t idx) {
+    bool write_free_chunk(uint8_t idx, const char *data) {
         // 计算真实写入位置
-        size_t page_w_idx = idx + grouping_w_offset;
+        size_t page_w_idx = idx + grouping_w_offset.load();
         uint64_t this_group_w_idx = grouping_w_idx.load();
         //printf("get chunk %d counst %d\n", idx, page_w_idx);
 
         // 当前窗口对应位置已满 写入下一个窗口
         if (memory_pool[page_w_idx].is_free.load() == false) {
             write_next_index.fetch_add(1);
-            size_t offset = (((this_group_w_idx + 1) & REM_MAX_GROUPING_IDX) * MAX_IDX);
+            size_t offset = ((this_group_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
             page_w_idx = idx + offset;
-            printf("waring need group %d w_offset %d\n", ((this_group_w_idx + 1) & REM_MAX_GROUPING_IDX), grouping_w_offset.load());
+            printf("waring need group %d %d w_offset %d\n", (this_group_w_idx & REM_MAX_GROUPING_IDX), this_group_w_idx, grouping_w_offset.load());
             // 第二次查找失败
             printf("write chunk idx_offset %d idx %d\n", page_w_idx, idx);
             if (memory_pool[page_w_idx].is_free.load() == false) {
                 printf("This block has been written, and there is a duplicate packge idx %d\t",idx);
-                return nullptr;
+                return false;
             }
         } else {
             write_index.fetch_add(1);
         }
+
+        memcpy(memory_pool[page_w_idx].data.get(), data, 4096);
         memory_pool[page_w_idx].is_free.store(false);
+
         // 进入到下一个分组
         if (write_index.load() == MAX_IDX) {
-            wait_next_free_group();
-            grouping_w_offset = (grouping_w_idx.load() & REM_MAX_GROUPING_IDX) * MAX_IDX;
-            printf("[write difftest packge] grouping_w_idx is full,get next %d\n", grouping_w_idx.load() & REM_MAX_GROUPING_IDX);
-            write_index = write_next_index.load();
-            write_next_index = 0;
+            size_t next_w_idx = wait_next_free_group();
+            grouping_w_offset.store((next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
+            printf("[write difftest packge] grouping_w_idx is full,get next %d\n", next_w_idx & REM_MAX_GROUPING_IDX);
+            write_index.store(write_next_index.load());
+            write_next_index.store(0);
         }
-        return memory_pool[page_w_idx].data.get();
+        return true;
     }
 
     // 获取最前面的内存
-    const char *get_busy_chunk() {
-        size_t page_r_idx = read_index.load() + grouping_r_offset;
-        read_index.fetch_add(1);
+    bool read_busy_chunk(char *data) {
+        size_t page_r_idx = read_index.fetch_add(1) + grouping_r_offset;
         size_t this_r_idx = read_index.load();
         if (this_r_idx == MAX_IDX) {
             read_index.store(0);
-            wait_next_group();
-            printf("grouping_r_idx %d \n", grouping_r_idx & REM_MAX_GROUPING_IDX);
-            grouping_r_offset = (grouping_r_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
+            size_t next_r_idx = wait_next_group();
+            printf("grouping_r_idx %d \n", next_r_idx & REM_MAX_GROUPING_IDX);
+            grouping_r_offset.store((next_r_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
         }
         memory_pool[page_r_idx].is_free.store(true);
-        return memory_pool[page_r_idx].data.get();
+        memcpy(memory_pool[page_r_idx].data.get(), data, 4096);
+        return true;
     }
 
     // 等待空闲内存块
-    bool wait_next_free_group() {
+    size_t wait_next_free_group() {
         empty_blocks.fetch_sub(1);
         size_t free_num = empty_blocks.load();
-        printf("w_idx - r_idx %d \n", free_num);
-        if (free_num < 1) {
-            printf("loack [next_free_group]\n");
-            std::unique_lock<std::mutex> lock(block_mutexes[free_num]);
-            cv_empty.wait(lock, [this] { return empty_blocks.load() >= 1;});
-        }
         cv_filled.notify_all();
-        grouping_w_idx.fetch_add(1);
-        return true;
+
+        printf("get free w_idx - r_idx %d \n", free_num);
+        if (free_num <= 1) {
+            printf("loack [next_free_group]\n");
+            std::unique_lock<std::mutex> lock(block_mutexes);
+            cv_empty.wait(lock, [this] { return empty_blocks.load() > 1;});
+        }
+        return grouping_w_idx.fetch_add(1);
     }
 
     // 等待数据可用
-    bool wait_next_group() {
+    size_t wait_next_group() {
         empty_blocks.fetch_add(1);
         size_t free_num = empty_blocks.load();
-        printf("w_idx - r_idx %d \n",free_num);
+        cv_empty.notify_all();
+
+        printf("get full w_idx - r_idx %d \n",free_num);
         if (free_num >= MAX_GROUPING_IDX) {
             printf("lock [wait_next_group]\n");
-            std::unique_lock<std::mutex> lock(block_mutexes[free_num]);
+            std::unique_lock<std::mutex> lock(block_mutexes);
             cv_filled.wait(lock, [this] { return empty_blocks.load() < MAX_GROUPING_IDX;});
         }
-        cv_empty.notify_all();
-        grouping_r_idx.fetch_add(1);
-
-        return true;
+        return grouping_r_idx.fetch_add(1);
     }
 
     //检查有无数据块可用
     bool check_group() {
         bool result = (grouping_w_idx.load() > grouping_r_idx.load()) ? true : false;
-        if(result) printf("check ture = w_idx %ld r_idx %ld\n",grouping_w_idx.load(), grouping_r_idx.load());
         return result;
     }
 
 private:
 
     MemoryBlock memory_pool[NUM_BLOCKS];  // 内存池
-    std::vector<std::mutex> block_mutexes{MAX_GROUPING_IDX}; // 分区锁数组
+    std::mutex block_mutexes; // 分区锁数组
     
     std::condition_variable cv_empty;      // 空闲块条件变量
     std::condition_variable cv_filled;     // 已填充块条件变量
@@ -247,8 +248,8 @@ private:
 
     std::atomic<size_t> grouping_r_offset = 0; // 当前消费者使用的偏移量
     std::atomic<size_t> grouping_w_offset = 0; // 当前生产者使用的偏移量
-    std::atomic<size_t> grouping_w_idx = 0;
-    std::atomic<size_t> grouping_r_idx = 0;
+    std::atomic<size_t> grouping_w_idx = 1;
+    std::atomic<size_t> grouping_r_idx = 1;
     std::atomic<size_t> write_index;       // 写入索引
     std::atomic<size_t> write_next_index;
     std::atomic<size_t> read_index;        // 读取索引

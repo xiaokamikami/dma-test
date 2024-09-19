@@ -17,7 +17,7 @@ LIBS = -lrt -lpthread
 
 ifeq ($(FPGA),1)
 	CXXFLAGS += -DHAVE_FPGA
-	LIBS += -laio
+#LIBS += -laio
 endif
 
 # 程序名称

@@ -25,7 +25,7 @@
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
-#define TEST_NUM  4096
+#define TEST_NUM  409600
 #define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -155,19 +155,20 @@ private:
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
             printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
-            if (memory_idx_pool.write_free_chunk(idx, &rdata) == false) {
+            if (memory_idx_pool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
                 assert(0);
             }
+            send_packgs.fetch_add(1);
     #else // NO FPGA
             DmaPackge send_packg;
             bool flow_control = false;
             size_t send_flow_cout_i = send_flow_cout[channel];
             do{
                 for (int j = 0; j < DMA_CHANNS; j++) {
-                    if ((send_flow_cout_i - send_flow_cout[j]) > 5) {//控制顺序的随机度
+                    if ((send_flow_cout_i - send_flow_cout[j]) > DMA_CHANNS) {//控制顺序的随机度
                         flow_control = true;
                         break;
                     }
@@ -186,7 +187,6 @@ private:
                 assert(0);
             }
             send_flow_cout[channel] ++;
-            send_packgs.fetch_add(DMA_CHANNS);
     #endif
          if (stream_receiver_cout >= TEST_NUM)
             return;
@@ -199,10 +199,6 @@ private:
         static size_t recv_count = 256;
         DmaPackge test_packge;
         while (running) {
-            if (recv_count == 256) {
-                while(memory_idx_pool.check_group() == false) {}
-                recv_count = 0;
-            }
         #ifdef HAVE_FPGA
             #ifdef LOOP_BACK
                 DmaPackge send_packg[DMA_CHANNS];
@@ -213,11 +209,19 @@ private:
                 while(send_packgs.load() > (MAX_H2C_SIZE - DMA_CHANNS)){}
                 write(xdma_h2c_fd, send_packg, sizeof(send_packg));
                 send_packgs.fetch_add(DMA_CHANNS);
+            #else
+                send_packgs.fetch_sub(1);
             #endif
-        #else
-            send_packgs.fetch_sub(1);
         #endif
-            //while(send_packgs.load() > 256) {}
+            if (recv_count == 256) {
+                #ifdef HAVE_FPGA
+                    if(memory_idx_pool.check_group() == false)
+                        continue;
+                #else
+                    while(memory_idx_pool.check_group() == false) {}
+                #endif
+                recv_count = 0;
+            }
             memory_idx_pool.read_busy_chunk((char *)&test_packge);
 
             get_diff_count ++;

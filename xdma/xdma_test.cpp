@@ -139,8 +139,7 @@ private:
     // 生成测速数据包
     void encapsulation_packge(DmaPackge *send_packg) {
         static std::atomic<uint8_t> pack_indx = 0;
-        send_packg->pack_indx = pack_indx.load();
-        pack_indx.fetch_add(1);
+        send_packg->pack_indx = pack_indx.fetch_add(1);
     }
 
     // 接收流数据
@@ -163,13 +162,12 @@ private:
                 assert(0);
             }
     #else // NO FPGA
-        DmaPackge send_packg;  
-        //写入伪数据包
+            DmaPackge send_packg;
             bool flow_control = false;
             size_t send_flow_cout_i = send_flow_cout[channel];
             do{
                 for (int j = 0; j < DMA_CHANNS; j++) {
-                    if ((send_flow_cout_i - send_flow_cout[j]) > 5) {
+                    if ((send_flow_cout_i - send_flow_cout[j]) > 5) {//控制顺序的随机度
                         flow_control = true;
                         break;
                     }
@@ -180,6 +178,7 @@ private:
             encapsulation_packge(&send_packg); 
             uint8_t idx = send_packg.pack_indx;
             //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
+            //写入伪数据包
             if (memory_idx_pool.write_free_chunk(idx, (char *)&send_packg) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
@@ -197,10 +196,10 @@ private:
     // 处理接收到的数据
     void processData() {
         static int get_diff_count = 0;
-        static uint8_t recv_count = REM_MAX_IDX;
+        static size_t recv_count = 256;
         DmaPackge test_packge;
         while (running) {
-            if (recv_count == REM_MAX_IDX) {
+            if (recv_count == 256) {
                 while(memory_idx_pool.check_group() == false) {}
                 recv_count = 0;
             }
@@ -220,10 +219,16 @@ private:
         #endif
             //while(send_packgs.load() > 256) {}
             memory_idx_pool.read_busy_chunk((char *)&test_packge);
-            //printf("[processData]get difftest %d\n",test_packge.pack_indx);
+
             get_diff_count ++;
             stream_receiver_cout ++;
+
+            if (test_packge.pack_indx != recv_count) {
+                printf("[processData]difftest idx check faile packge=%d, need=%d\n", test_packge.pack_indx, recv_count);
+                assert(0);
+            }
             recv_count ++;
+
             if (stream_receiver_cout % 100 == 0 && stream_receiver_cout > 0)
                 printf("stream_receiver_cout %d \n",stream_receiver_cout.load());
             if (stream_receiver_cout >= TEST_NUM) {

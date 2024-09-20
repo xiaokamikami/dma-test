@@ -5,7 +5,7 @@ FPGA?=0
 DMA_CHANNS?=1
 
 # C++ 编译标志
-CXXFLAGS = -Wextra -pedantic -O3 -fpermissive -fcommon -DDMA_CHANNS=$(DMA_CHANNS)
+CXXFLAGS = -std=c++11 -Wextra -pedantic -O3 -fpermissive -fcommon -DDMA_CHANNS=$(DMA_CHANNS)
 # 包含目录
 INCLUDES = -I../include
 
@@ -32,6 +32,6 @@ clean:
 
 # 编译和链接规则
 $(PROGNAME): $(SOURCES)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -o $@ $(LDFLAGS) $(LIBS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $^ -g -o $@ $(LDFLAGS) $(LIBS)
 
 .PHONY: all clean

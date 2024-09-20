@@ -25,7 +25,7 @@
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
-#define TEST_NUM  409600
+#define TEST_NUM  4096000
 //#define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -135,7 +135,7 @@ private:
     int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
     int xdma_h2c_fd;
 
-    int send_flow_cout[DMA_CHANNS] = {0};
+    uint64_t send_flow_cout[DMA_CHANNS] = {0};
     // 生成测速数据包
     uint8_t encapsulation_packge() {
         static std::atomic<uint8_t> pack_indx{0};
@@ -168,18 +168,19 @@ private:
             }
             send_packgs.fetch_add(1);
     #else // NO FPGA
-            bool flow_control = false;
-            size_t send_flow_cout_i = send_flow_cout[channel];
+            bool flow_control = true;
+            uint64_t send_flow_cout_i = send_flow_cout[channel];
             do{
                 for (int j = 0; j < DMA_CHANNS; j++) {
-                    if ((send_flow_cout_i - send_flow_cout[j]) > DMA_CHANNS) {//控制顺序的随机度
-                        flow_control = true;
-                        break;
-                    } else if (j == DMA_CHANNS) {
+                    if (j == channel) continue; // 跳过当前通道
+                    uint64_t diff = send_flow_cout_i - send_flow_cout[j];
+                    if (diff < DMA_CHANNS) {
                         flow_control = false;
+                    } else {
+                        flow_control = true;
                     }
                 }
-            } while (flow_control == true);
+            } while (flow_control == true);//发送流量控制
 
             send_packg.pack_indx = encapsulation_packge(); 
             //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
@@ -238,8 +239,8 @@ private:
             }
             recv_count ++;
 
-            if (stream_receiver_cout % 100 == 0 && stream_receiver_cout > 0)
-                printf("stream_receiver_cout %d \n",stream_receiver_cout.load());
+            // if (stream_receiver_cout % 1000 == 0 && stream_receiver_cout > 0)
+            //     printf("stream_receiver_cout %d \n",stream_receiver_cout.load());
             if (stream_receiver_cout >= TEST_NUM) {
                 printf("Reaching the statistical upper limit\n");
                 std::lock_guard<std::mutex> lock(test_mtx);

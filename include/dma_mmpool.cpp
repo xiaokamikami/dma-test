@@ -69,7 +69,7 @@ public:
 
     // 获取下一个块并上锁 返回空闲块的指针
     char *get_free_chunk() {
-        page_head = (write_index++) & REM_NUM_BLOCKS;
+        page_head = (write_count++) & REM_NUM_BLOCKS;
         {
             std::unique_lock<std::mutex> lock(block_mutexes[page_head]);
             cv_empty.wait(lock, [this] { return empty_blocks > 0;});
@@ -108,7 +108,7 @@ private:
     std::vector<std::mutex> block_mutexes{NUM_BLOCKS}; // 分区锁数组
     std::atomic<size_t> empty_blocks {NUM_BLOCKS};      // 空闲块计数
     std::atomic<size_t> filled_blocks;     // 已填充块计数
-    std::atomic<size_t> write_index;       // 写入索引
+    std::atomic<size_t> write_count;       // 写入索引
     std::atomic<size_t> read_index;        // 读取索引
     std::condition_variable cv_empty;      // 空闲块条件变量
     std::condition_variable cv_filled;     // 已填充块条件变量
@@ -160,28 +160,27 @@ public:
         // 计算真实写入位置
         page_w_idx = idx + grouping_w_offset;
         //printf("get chunk %d counst %d\n", idx, page_w_idx);
-        // 当前窗口对应位置已满 写入下一个窗口
+        // 边界处回绕数据的处理
         if (memory_pool[page_w_idx].is_free.load() == false) {
-            size_t this_group_w_idx = grouping_w_idx.load();
-            size_t offset = ((this_group_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
+            size_t this_group = grouping_w_idx.load();
+            size_t offset = ((this_group & REM_MAX_GROUPING_IDX) * MAX_IDX);
             page_w_idx = idx + offset;
-            write_next_index ++;
-            //printf("waring need group %d %d w_offset %d\n", (this_group_w_idx & REM_MAX_GROUPING_IDX), this_group_w_idx, grouping_w_offset);
-            // 第二次查找失败
-            //printf("waring write chunk idx_offset %d idx %d\n", page_w_idx, idx);
+            write_next_count ++;
+            // 查找失败
             if (memory_pool[page_w_idx].is_free.load() == false) {
-                printf("This block has been written, and there is a duplicate packge idx %d\t",idx);
+                printf("This block has been written, and there is a duplicate packge idx %d\n",idx);
+                printf("write chunk idx_offset %d, offset %d, group count %d\n", page_w_idx, grouping_w_offset, this_group);
                 return false;
             }
         } else {
-            write_index ++;
+            write_count ++;
             // 进入到下一个分组
-            if (write_index == MAX_IDX) {
+            if (write_count == MAX_IDX) {
                 size_t next_w_idx = wait_next_free_group();
                 grouping_w_offset = (next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
-                //printf("[write difftest packge] group_w is full,get next %d, next cont %d\n", next_w_idx & REM_MAX_GROUPING_IDX, write_next_index.load());
-                write_index = write_next_index;
-                write_next_index = 0;
+                //printf("[write difftest packge] group_w is full,get next %d, next cont %d\n", next_w_idx & REM_MAX_GROUPING_IDX, write_next_count.load());
+                write_count = write_next_count;
+                write_next_count = 0;
             }
         }
     }
@@ -211,7 +210,7 @@ public:
         size_t free_num = empty_blocks.load();
         cv_filled.notify_all();
 
-        printf("get free w_idx - r_idx %d \n", free_num);
+        //printf("get free w_idx - r_idx %d \n", free_num);
         if (free_num <= 1) {
             //printf("lock [next_free_group]\n");
             std::unique_lock<std::mutex> lock(shift_mutexes);
@@ -250,8 +249,8 @@ private:
 
     size_t grouping_r_offset = 0; // 当前消费者使用的偏移量
     size_t grouping_w_offset = 0; // 当前生产者使用的偏移量
-    size_t write_index;           // 写入索引
-    size_t write_next_index;
+    size_t write_count;           // 区块写入计数
+    size_t write_next_count;
 
     std::atomic<size_t> empty_blocks{MAX_GROUPING_IDX};     // 空闲块计数
     std::atomic<size_t> grouping_w_idx{1};

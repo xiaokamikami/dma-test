@@ -26,7 +26,7 @@
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
 #define TEST_NUM  409600
-#define LOOP_BACK
+//#define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
 #define DMA_QUEUE_MAX_SIZE 255
@@ -42,7 +42,7 @@ MemoryIdxPool memory_idx_pool;
 
 std::mutex test_mtx;
 std::condition_variable test_cv;
-std::atomic <uint64_t> stream_receiver_cout = 0;
+std::atomic <uint64_t> stream_receiver_cout{0};
 unsigned char *dma_mem = NULL;
 
 class StreamReceiver {
@@ -120,7 +120,7 @@ public:
 #endif
         if (process_thread.joinable()) process_thread.join();
         printf("process STOP \n");
-        memory_pool.stopMemoryPool();
+        memory_idx_pool.stopMemoryPool();
         printf("MEM STOP \n");
     }
 
@@ -135,16 +135,21 @@ private:
     int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
     int xdma_h2c_fd;
 
-    int send_flow_cout[DMA_CHANNS];
+    int send_flow_cout[DMA_CHANNS] = {0};
     // 生成测速数据包
-    void encapsulation_packge(DmaPackge *send_packg) {
-        static std::atomic<uint8_t> pack_indx = 0;
-        send_packg->pack_indx = pack_indx.fetch_add(1);
+    uint8_t encapsulation_packge() {
+        static std::atomic<uint8_t> pack_indx{0};
+        return pack_indx.fetch_add(1);
     }
 
     // 接收流数据
     void receiveStream(int channel) {
+    #ifdef HAVE_FPGA
         char *rdata = (char *)malloc(4096);
+    #else
+        DmaPackge send_packg;
+        memset(send_packg.data, 0, sizeof(send_packg.data));
+    #endif
         while (running) {
     #ifdef HAVE_FPGA
             uint64_t lseek_size = channel * sizeof(DmaPackge);
@@ -154,7 +159,7 @@ private:
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
-            printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
+            //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
             if (memory_idx_pool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
@@ -163,7 +168,6 @@ private:
             }
             send_packgs.fetch_add(1);
     #else // NO FPGA
-            DmaPackge send_packg;
             bool flow_control = false;
             size_t send_flow_cout_i = send_flow_cout[channel];
             do{
@@ -171,16 +175,16 @@ private:
                     if ((send_flow_cout_i - send_flow_cout[j]) > DMA_CHANNS) {//控制顺序的随机度
                         flow_control = true;
                         break;
+                    } else if (j == DMA_CHANNS) {
+                        flow_control = false;
                     }
                 }
-                flow_control = false;
             } while (flow_control == true);
 
-            encapsulation_packge(&send_packg); 
-            uint8_t idx = send_packg.pack_indx;
+            send_packg.pack_indx = encapsulation_packge(); 
             //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
             //写入伪数据包
-            if (memory_idx_pool.write_free_chunk(idx, (char *)&send_packg) == false) {
+            if (memory_idx_pool.write_free_chunk(send_packg.pack_indx, (char *)&send_packg) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
@@ -203,7 +207,8 @@ private:
             #ifdef LOOP_BACK
                 DmaPackge send_packg[DMA_CHANNS];
                 for (int i = 0; i < DMA_CHANNS; i++) {
-                    encapsulation_packge(&send_packg[i]);
+                    send_packg.pack_indx = encapsulation_packge();
+                    memset(send_packg.data, 0, sizeof(send_packg.data));
                     //printf("send pack id %d \n", send_packg[i].pack_indx);
                 }
                 while(send_packgs.load() > (MAX_H2C_SIZE - DMA_CHANNS)){}
@@ -276,7 +281,7 @@ int main() {
 #ifdef HAVE_FPGA
         std::cout << "XDMA Stream rate = "; 
 #else
-        std::cout << "The C2H theoretical rate of a thread = "; 
+        std::cout << "The DMA HAVE_CHANNS" << DMA_CHANNS << ", C2H theoretical rate of a thread = "; 
 #endif
         std::cout << rate_bytes / 1024 / 1024 << "MB/s" << std::endl;
     } catch (const std::exception& e) {

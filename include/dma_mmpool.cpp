@@ -13,7 +13,7 @@
 extern bool running;
     // 内存块结构
     struct MemoryBlock {
-        std::unique_ptr<char, std::function<void(char*)>> data;
+        std::unique_ptr<char[], std::function<void(char*)>> data;
         std::atomic<bool> is_free;
 
         MemoryBlock() : is_free(true) {
@@ -21,13 +21,20 @@ extern bool running;
             if (posix_memalign(&ptr, 4096, 4096) != 0) {
                 throw std::runtime_error("Failed to allocate aligned memory");
             }
-            data = std::unique_ptr<char, std::function<void(char*)>>(
+            memset(ptr, 0, 4096);
+            data = std::unique_ptr<char[], std::function<void(char*)>>(
                 static_cast<char*>(ptr),
                 [](char* p) { free(p); }
             );
         }
-    };
+        // Disable copy operations
+        MemoryBlock(const MemoryBlock&) = delete;
+        MemoryBlock& operator=(const MemoryBlock&) = delete;
 
+        // Enable move operations
+        MemoryBlock(MemoryBlock&&) = default;
+        MemoryBlock& operator=(MemoryBlock&&) = default;
+    };
 class MemoryPool {
 public:
     // 构造函数，分配对齐的内存块
@@ -99,7 +106,7 @@ public:
 private:
     MemoryBlock memory_pool[NUM_BLOCKS];  // 内存池
     std::vector<std::mutex> block_mutexes{NUM_BLOCKS}; // 分区锁数组
-    std::atomic<size_t> empty_blocks = NUM_BLOCKS;      // 空闲块计数
+    std::atomic<size_t> empty_blocks {NUM_BLOCKS};      // 空闲块计数
     std::atomic<size_t> filled_blocks;     // 已填充块计数
     std::atomic<size_t> write_index;       // 写入索引
     std::atomic<size_t> read_index;        // 读取索引
@@ -132,11 +139,7 @@ public:
     MemoryIdxPool& operator=(const MemoryIdxPool&) = delete;
 
     // 初始化内存池
-    void initMemoryPool() {
-        for (size_t i = 0; i < NUM_BLOCKS; ++i) {
-            memory_pool[i].is_free = true;
-        }
-    }
+    void initMemoryPool() { }
 
     // 清理内存池
     void cleanupMemoryPool() {
@@ -160,9 +163,9 @@ public:
         // 当前窗口对应位置已满 写入下一个窗口
         if (memory_pool[page_w_idx].is_free.load() == false) {
             size_t this_group_w_idx = grouping_w_idx.load();
-            write_next_index.fetch_add(1);
             size_t offset = ((this_group_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
             page_w_idx = idx + offset;
+            write_next_index ++;
             //printf("waring need group %d %d w_offset %d\n", (this_group_w_idx & REM_MAX_GROUPING_IDX), this_group_w_idx, grouping_w_offset);
             // 第二次查找失败
             //printf("waring write chunk idx_offset %d idx %d\n", page_w_idx, idx);
@@ -171,14 +174,14 @@ public:
                 return false;
             }
         } else {
-            write_index.fetch_add(1);
+            write_index ++;
             // 进入到下一个分组
-            if (write_index.load() == MAX_IDX) {
+            if (write_index == MAX_IDX) {
                 size_t next_w_idx = wait_next_free_group();
                 grouping_w_offset = (next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
                 //printf("[write difftest packge] group_w is full,get next %d, next cont %d\n", next_w_idx & REM_MAX_GROUPING_IDX, write_next_index.load());
-                write_index.store(write_next_index.load());
-                write_next_index.store(0);
+                write_index = write_next_index;
+                write_next_index = 0;
             }
         }
     }
@@ -247,11 +250,11 @@ private:
 
     size_t grouping_r_offset = 0; // 当前消费者使用的偏移量
     size_t grouping_w_offset = 0; // 当前生产者使用的偏移量
+    size_t write_index;           // 写入索引
+    size_t write_next_index;
 
     std::atomic<size_t> empty_blocks{MAX_GROUPING_IDX};     // 空闲块计数
     std::atomic<size_t> grouping_w_idx{1};
     std::atomic<size_t> grouping_r_idx{1};
-    std::atomic<size_t> write_index;       // 写入索引
-    std::atomic<size_t> write_next_index;
     std::atomic<size_t> read_index;        // 读取索引
 };

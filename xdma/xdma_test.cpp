@@ -127,7 +127,7 @@ public:
 private:
     std::atomic<bool> running;   // 运行标志
 
-    std::atomic<uint64_t> send_packgs;   // 当前待回收数据量
+    std::atomic<uint64_t> send_packgs{0};   // 当前待回收数据量
 
     std::thread receive_thread[DMA_CHANNS];  // 接收线程
     std::thread process_thread;  // 处理线程
@@ -182,11 +182,11 @@ private:
                 }
             } while (flow_control == true);//发送流量控制
 
-            send_packg.pack_indx = encapsulation_packge(); 
-            //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
+            send_packg.pack_indx = encapsulation_packge();
+            //printf("[receive] get dma_ch-%d idx %d\n", channel, send_packg.pack_indx);
             //写入伪数据包
             if (memory_idx_pool.write_free_chunk(send_packg.pack_indx, (char *)&send_packg) == false) {
-                stream_receiver_cout == TEST_NUM;
+                stream_receiver_cout = TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
                 assert(0);
@@ -282,7 +282,7 @@ int main() {
 #ifdef HAVE_FPGA
         std::cout << "XDMA Stream rate = "; 
 #else
-        std::cout << "The DMA HAVE_CHANNS" << DMA_CHANNS << ", C2H theoretical rate of a thread = "; 
+        std::cout << "The DMA HAVE_CHANNS:" << DMA_CHANNS << ", C2H theoretical rate of a thread = "; 
 #endif
         std::cout << rate_bytes / 1024 / 1024 << "MB/s" << std::endl;
     } catch (const std::exception& e) {

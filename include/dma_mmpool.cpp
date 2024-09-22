@@ -3,6 +3,7 @@
 #include <vector>
 #include <atomic>
 #include <memory>
+#include <unistd.h>
 #include <functional>
 #define FIFO_SIZE 8192 * 1024 // 8M fifo
 #define PAGE_SIZE 4096  // 4K packge
@@ -120,6 +121,7 @@ private:
 
 #define MAX_IDX 256
 #define MAX_GROUPING_IDX  NUM_BLOCKS / MAX_IDX
+#define MAX_GROUP_READ MAX_GROUPING_IDX - 2 //窗口需要预留两个空闲空间
 #define REM_MAX_IDX  (MAX_IDX - 1)
 #define REM_MAX_GROUPING_IDX  (MAX_GROUPING_IDX - 1)
 
@@ -152,40 +154,43 @@ public:
         cv_filled.notify_all();
     }
 
-    // 获得一个空闲组的指定空闲块 返回空闲块的指针
+    // 写入一个空闲窗口的指定空闲块
     bool write_free_chunk(uint8_t idx, const char *data) {
         size_t page_w_idx;
-    {
-        std::lock_guard <std::mutex> lock(offset_mutexes);
-        // 计算真实写入位置
-        page_w_idx = idx + grouping_w_offset;
-        //printf("get chunk %d counst %d\n", idx, page_w_idx);
-        // 边界处回绕数据的处理
-        if (memory_pool[page_w_idx].is_free.load() == false) {
-            size_t this_group = grouping_w_idx.load();
-            size_t offset = ((this_group & REM_MAX_GROUPING_IDX) * MAX_IDX);
-            page_w_idx = idx + offset;
-            write_next_count ++;
-            // 查找失败
+        {
+            std::lock_guard <std::mutex> lock(offset_mutexes);
+
+            page_w_idx = idx + grouping_w_offset;
+
+            // 边界处回绕数据的处理
             if (memory_pool[page_w_idx].is_free.load() == false) {
-                printf("This block has been written, and there is a duplicate packge idx %d\n",idx);
-                printf("write chunk idx_offset %d, offset %d, group count %d\n", page_w_idx, grouping_w_offset, this_group);
-                return false;
+                size_t this_group = grouping_w_idx.load();
+                size_t offset = ((this_group & REM_MAX_GROUPING_IDX) * MAX_IDX);
+                page_w_idx = idx + offset;
+                write_next_count ++;
+                // 查找失败
+                if (memory_pool[page_w_idx].is_free.load() == false) {
+                    printf("This block has been written, and there is a duplicate packge idx %d\n",idx);
+                    printf("write chunk idx_offset %d, offset %d, group count %d\n", page_w_idx, grouping_w_offset, this_group);
+                    return false;
+                }
+            } else {
+                write_count ++;
+                // 进入到下一个分组
+                if (write_count == MAX_IDX) {
+                    memcpy(memory_pool[page_w_idx].data.get(), data, 4096);
+                    memory_pool[page_w_idx].is_free.store(false);
+                    size_t next_w_idx = wait_next_free_group();
+                    grouping_w_offset = (next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
+                    write_count = write_next_count;
+                    write_next_count = 0;
+                    return true;
+                }
             }
-        } else {
-            write_count ++;
-            // 进入到下一个分组
-            if (write_count == MAX_IDX) {
-                size_t next_w_idx = wait_next_free_group();
-                grouping_w_offset = (next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
-                //printf("[write difftest packge] group_w is full,get next %d, next cont %d\n", next_w_idx & REM_MAX_GROUPING_IDX, write_next_count.load());
-                write_count = write_next_count;
-                write_next_count = 0;
-            }
+            memory_pool[page_w_idx].is_free.store(false);
         }
-    }
         memcpy(memory_pool[page_w_idx].data.get(), data, 4096);
-        memory_pool[page_w_idx].is_free.store(false);
+
         return true;
     }
 
@@ -195,12 +200,18 @@ public:
         size_t this_r_idx = read_index.load();
         if (this_r_idx == MAX_IDX) {
             read_index.store(0);
-            size_t next_r_idx = wait_next_group();
+            size_t next_r_idx = wait_next_full_group();
             //printf("grouping_r_idx %d \n", next_r_idx & REM_MAX_GROUPING_IDX);
             grouping_r_offset = ((next_r_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
         }
-        memory_pool[page_r_idx].is_free.store(true);
+
+        if (memory_pool[page_r_idx].is_free.load() == true) {
+            printf("An attempt was made to read the block of free %d\n", page_r_idx);
+            assert(0);
+            return false;
+        }
         memcpy(data, memory_pool[page_r_idx].data.get(), 4096);
+        memory_pool[page_r_idx].is_free.store(true);
         return true;
     }
 
@@ -210,8 +221,8 @@ public:
         size_t free_num = empty_blocks.load();
         cv_filled.notify_all();
 
-        //printf("get free w_idx - r_idx %d \n", free_num);
-        if (free_num <= 1) {
+        //printf("get free w_idx - r_idx %d \n", grouping_w_idx - grouping_r_idx);
+        if (free_num <= 2) { //至少预留2个空闲块
             //printf("lock [next_free_group]\n");
             std::unique_lock<std::mutex> lock(shift_mutexes);
             cv_empty.wait(lock, [this] { return empty_blocks.load() > 1;});
@@ -219,17 +230,17 @@ public:
         return grouping_w_idx.fetch_add(1);
     }
 
-    // 等待数据可用
-    size_t wait_next_group() {
+    // 等待数据可读
+    size_t wait_next_full_group() {
         empty_blocks.fetch_add(1);
         size_t free_num = empty_blocks.load();
         cv_empty.notify_all();
 
-        //printf("get full w_idx - r_idx %d \n",free_num);
-        if (free_num >= MAX_GROUPING_IDX) {
-            //printf("lock [wait_next_group]\n");
+        //printf("get full w_idx - r_idx %d \n", grouping_w_idx - grouping_r_idx);
+        if (free_num >= MAX_GROUP_READ) {
+            //printf("lock [wait_next_full_group]\n");
             std::unique_lock<std::mutex> lock(shift_mutexes);
-            cv_filled.wait(lock, [this] { return empty_blocks.load() < MAX_GROUPING_IDX;});
+            cv_filled.wait(lock, [this] { return empty_blocks.load() < MAX_GROUP_READ;});
         }
         return grouping_r_idx.fetch_add(1);
     }
@@ -249,11 +260,11 @@ private:
 
     size_t grouping_r_offset = 0; // 当前消费者使用的偏移量
     size_t grouping_w_offset = 0; // 当前生产者使用的偏移量
-    size_t write_count;           // 区块写入计数
-    size_t write_next_count;
+    size_t write_count = 0;           // 区块写入计数
+    size_t write_next_count = 0;
 
-    std::atomic<size_t> empty_blocks{MAX_GROUPING_IDX};     // 空闲块计数
+    std::atomic<size_t> empty_blocks{MAX_GROUP_READ};     // 空闲块计数
     std::atomic<size_t> grouping_w_idx{1};
     std::atomic<size_t> grouping_r_idx{1};
-    std::atomic<size_t> read_index;        // 读取索引
+    std::atomic<size_t> read_index{0};        // 读取索引
 };

@@ -120,7 +120,7 @@ public:
 #endif
         if (process_thread.joinable()) process_thread.join();
         printf("process STOP \n");
-        memory_idx_pool.stopMemoryPool();
+        memory_idx_pool.cleanupMemoryPool();
         printf("MEM STOP \n");
     }
 
@@ -140,6 +140,22 @@ private:
     uint8_t encapsulation_packge() {
         static std::atomic<uint8_t> pack_indx{0};
         return pack_indx.fetch_add(1);
+    }
+
+    void send_flow_control(int channel) {
+        bool flow_control = true;
+        uint64_t send_flow_cout_i = send_flow_cout[channel];
+        do{
+            for (int j = 0; j < DMA_CHANNS; j++) {
+                if (j == channel) continue; // 跳过当前通道
+                uint64_t diff = send_flow_cout_i - send_flow_cout[j];
+                if (diff < DMA_CHANNS) {
+                    flow_control = false;
+                } else {
+                    flow_control = true;
+                }
+            }
+        } while (flow_control == true);//发送流量控制
     }
 
     // 接收流数据
@@ -168,19 +184,7 @@ private:
             }
             send_packgs.fetch_add(1);
     #else // NO FPGA
-            bool flow_control = true;
-            uint64_t send_flow_cout_i = send_flow_cout[channel];
-            do{
-                for (int j = 0; j < DMA_CHANNS; j++) {
-                    if (j == channel) continue; // 跳过当前通道
-                    uint64_t diff = send_flow_cout_i - send_flow_cout[j];
-                    if (diff < DMA_CHANNS) {
-                        flow_control = false;
-                    } else {
-                        flow_control = true;
-                    }
-                }
-            } while (flow_control == true);//发送流量控制
+            send_flow_control(channel);
 
             send_packg.pack_indx = encapsulation_packge();
             //printf("[receive] get dma_ch-%d idx %d\n", channel, send_packg.pack_indx);

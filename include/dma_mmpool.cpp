@@ -197,7 +197,6 @@ public:
 
         if (memory_pool[page_r_idx].is_free.load() == true) {
             printf("An attempt was made to read the block of free %d\n", page_r_idx);
-            assert(0);
             return false;
         }
         memcpy(data, memory_pool[page_r_idx].data.get(), 4096);
@@ -207,8 +206,7 @@ public:
 
     // 等待空闲内存块
     size_t wait_next_free_group() {
-        empty_blocks.fetch_sub(1);
-        size_t free_num = empty_blocks.load();
+        size_t free_num = empty_blocks.fetch_sub(1, std::memory_order_relaxed) + 1;
         cv_filled.notify_all();
 
         //printf("get free w_idx - r_idx %d \n", group_w_idx - group_r_idx);
@@ -222,8 +220,7 @@ public:
 
     // 等待数据可读
     size_t wait_next_full_group() {
-        empty_blocks.fetch_add(1);
-        size_t free_num = empty_blocks.load();
+        size_t free_num = empty_blocks.fetch_add(1, std::memory_order_relaxed) + 1;
         cv_empty.notify_all();
 
         //printf("get full w_idx - r_idx %d \n", group_w_idx - group_r_idx);

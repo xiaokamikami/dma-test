@@ -179,7 +179,7 @@ private:
             if (memory_idx_pool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
-                test_cv.notify_all();
+                stop();
                 assert(0);
             }
             send_packgs.fetch_add(1);
@@ -204,7 +204,6 @@ private:
 
     // 处理接收到的数据
     void processData() {
-        static int get_diff_count = 0;
         static size_t recv_count = 256;
         DmaPackge test_packge;
         while (running) {
@@ -232,15 +231,17 @@ private:
                 #endif
                 recv_count = 0;
             }
-            memory_idx_pool.read_busy_chunk((char *)&test_packge);
-
-            get_diff_count ++;
-            stream_receiver_cout ++;
-
-            if (test_packge.pack_indx != recv_count) {
-                printf("[processData]difftest idx check faile packge=%d, need=%d\n", test_packge.pack_indx, recv_count);
+            if (memory_idx_pool.read_busy_chunk((char *)&test_packge) == false) {
+                printf("[processData]read_busy_chunk\n");
+                stop();
                 assert(0);
             }
+            if (test_packge.pack_indx != recv_count) {
+                printf("[processData]difftest idx check faile packge=%d, need=%d\n", test_packge.pack_indx, recv_count);
+                stop();
+                assert(0);
+            }
+            stream_receiver_cout ++;
             recv_count ++;
 
             // if (stream_receiver_cout % 1000 == 0 && stream_receiver_cout > 0)

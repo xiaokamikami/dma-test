@@ -16,6 +16,7 @@
 #include <sys/ioctl.h>
 #include <shared_mutex>
 #include <cassert>
+#include <fstream>
 
 #include "dma_mmpool.cpp"
 #include "diffstate.h"
@@ -44,6 +45,8 @@ std::mutex test_mtx;
 std::condition_variable test_cv;
 std::atomic <uint64_t> stream_receiver_cout{0};
 unsigned char *dma_mem = NULL;
+char workload_path[256] = {};
+bool use_workload = false;
 
 class StreamReceiver {
 public:
@@ -84,17 +87,15 @@ public:
         if (running.exchange(true)) return; // 如果已经运行，直接返回
         printf("DMA packge Size %d \n",sizeof(DmaPackge));
 #ifdef HAVE_FPGA
-        // 清除XDMA硬件缓存
-        // DmaPackge send_packg_full;
-        // memset(&send_packg_full, 0, sizeof(send_packg_full));
-        // for (int i = 0; i < (MAX_H2C_SIZE / 4); i++) {
-        //     write(xdma_h2c_fd, &send_packg_full, sizeof(send_packg_full));
-        // }
-        // for (int i = 0; i < 4; i++) {
-        //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
-        //     read(xdma_c2h_fd[i], &send_packg_full, sizeof(send_packg_full));
-        // }
+        // 下载workload
+        if (use_workload) {
+            device_write("/dev/xdma0_user", 0x100000, 1, false, nullptr);
+            device_write("/dev/xdma0_user", 0x10000, 0X8, false, nullptr);
+            device_write("/dev/xdma0_bypass", 0x0, 0, true, workload_path);
+            device_write("/dev/xdma0_user", 0x100000, 0, false, nullptr);
+        }
 #endif
+
         for(int i = 0; i < DMA_CHANNS;i ++) {
             printf("start c2h channel %d \n", i);
             receive_thread[i] = std::thread(&StreamReceiver::receiveStream, this, i);
@@ -259,10 +260,67 @@ private:
 
         }
     }
+
+    int device_write(const char *dev_name, uint64_t addr, uint64_t value, bool is_workload, const char *workload) {
+        size_t size = !is_workload ? 0x1000 : 0x10000;
+        uint64_t aligned_size = (size + 0xffful) & ~0xffful;
+        uint64_t base = addr & ~0xffful;
+        uint32_t offset = addr & 0xfffu;
+        std::ifstream workload_fd;
+        size_t pg_size = sysconf(_SC_PAGE_SIZE);
+
+        if (base % pg_size != 0) {
+            printf("base must be a multiple of system page size");
+            return -1;
+        }
+
+        int m_fd = open(dev_name, O_RDWR | O_SYNC);
+        if (m_fd < 0) {
+            printf("failed to open %s\n", dev_name);
+            return -1;
+        }
+        if (is_workload) {
+            workload_fd.open(workload);
+            if (!workload_fd.is_open()) {
+                printf("failed to open %s\n", dev_name);
+                return -1;
+            }
+        }
+
+        void *m_ptr = mmap(nullptr, aligned_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_fd, base);
+        if (m_ptr == MAP_FAILED) {
+            close(m_fd);
+            printf("failed to mmap %s", dev_name);
+        }
+
+        if (workload) {
+            workload_fd.read(((char *)m_ptr) + offset, size);
+            size_t bytes_read = workload_fd.gcount();
+            if (bytes_read < size)
+                memset(static_cast<char*>(m_ptr) + offset + bytes_read, 0, size - bytes_read);
+        } else {
+            ((volatile uint32_t *)m_ptr)[offset >> 2] = value;
+        }
+
+        munmap(m_ptr, aligned_size);
+        close(m_fd);
+
+        return 0;
+    }
+
 };
 
-int main() {
+int main(int argc, const char *argv[]) {
     struct timespec ts_start, ts_end;
+    size_t path_len = strlen(argv[0]);
+    if (path_len > 256)
+        printf("Handle error: path is too long");
+    else if(path_len > 0) {
+        memcpy(workload_path, argv[0], strlen(argv[0]));
+        use_workload = true;
+    }
+
+    
     try {
         StreamReceiver receiver;
         clock_gettime(CLOCK_MONOTONIC, &ts_start);

@@ -159,7 +159,7 @@ public:
                 // 查找失败
                 if (memory_pool[page_w_idx].is_free.load() == false) {
                     printf("This block has been written, and there is a duplicate packge idx %d\n",idx);
-                    printf("write chunk idx_offset %d, offset %d, group count %d\n", page_w_idx, group_w_offset, this_group);
+                    printf("write chunk idx_offset %ld, offset %ld, group count %ld\n", page_w_idx, group_w_offset, this_group);
                     return false;
                 }
             } else {
@@ -197,7 +197,7 @@ public:
         }
 
         if (memory_pool[page_r_idx].is_free.load() == true) {
-            printf("An attempt was made to read the block of free %d\n", page_r_idx);
+            printf("An attempt was made to read the block of free %ld\n", page_r_idx);
             return false;
         }
         memcpy(data, memory_pool[page_r_idx].data.get(), 4096);

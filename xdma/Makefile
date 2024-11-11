@@ -5,7 +5,7 @@ FPGA?=0
 DMA_CHANNS?=1
 
 # C++ 编译标志
-CXXFLAGS = -std=c++11 -Wextra -pedantic -O3 -DDMA_CHANNS=$(DMA_CHANNS)
+CXXFLAGS = -std=c++11 -Wall -Wextra -pedantic -march=native -O3 -DDMA_CHANNS=$(DMA_CHANNS)
 # 包含目录
 INCLUDES = -I../include
 

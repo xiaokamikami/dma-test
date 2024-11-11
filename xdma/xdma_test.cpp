@@ -26,7 +26,7 @@
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
-#define TEST_NUM  4096000
+#define TEST_NUM  8192000
 //#define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -85,7 +85,7 @@ public:
     // 启动流接收和处理
     void start() {
         if (running.exchange(true)) return; // 如果已经运行，直接返回
-        printf("DMA packge Size %d \n",sizeof(DmaPackge));
+        printf("DMA packge Size %ld \n", sizeof(DmaPackge));
 #ifdef HAVE_FPGA
         // 下载workload
         if (use_workload) {
@@ -223,7 +223,7 @@ private:
                 assert(0);
             }
             if (test_packge.pack_indx != recv_count) {
-                printf("[processData]difftest idx check faile packge=%d, need=%d\n", test_packge.pack_indx, recv_count);
+                printf("[processData]difftest idx check faile packge=%d, need=%ld\n", test_packge.pack_indx, recv_count);
                 stop();
                 assert(0);
             }

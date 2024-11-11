@@ -183,7 +183,10 @@ public:
 
         return true;
     }
-
+    void wait_mempool_start() {
+        std::unique_lock<std::mutex> lock(shift_mutexes);
+        cv_filled.wait(lock);
+    }
     // 获取最前面的内存
     bool read_busy_chunk(char *data) {
         size_t page_r_idx = read_count + group_r_offset;

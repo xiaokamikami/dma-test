@@ -128,8 +128,6 @@ public:
 private:
     std::atomic<bool> running;   // 运行标志
 
-    std::atomic<uint64_t> send_packgs{0};   // 当前待回收数据量
-
     std::thread receive_thread[DMA_CHANNS];  // 接收线程
     std::thread process_thread;  // 处理线程
 
@@ -176,14 +174,13 @@ private:
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
-            //printf("[receiveStream] get dma_ch-%d idx %d send_packgs %d\n", channel, idx, send_packgs.load());
+            printf("[receiveStream] get dma_ch-%d idx %d\n", channel, idx);
             if (memory_idx_pool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 stop();
                 assert(0);
             }
-            send_packgs.fetch_add(1);
     #else // NO FPGA
             send_flow_control(channel);
 
@@ -207,22 +204,10 @@ private:
     void processData() {
         static size_t recv_count = 256;
         DmaPackge test_packge;
-        while (running) {
         #ifdef HAVE_FPGA
-            #ifdef LOOP_BACK
-                DmaPackge send_packg[DMA_CHANNS];
-                for (int i = 0; i < DMA_CHANNS; i++) {
-                    send_packg.pack_indx = encapsulation_packge();
-                    memset(send_packg.data, 0, sizeof(send_packg.data));
-                    //printf("send pack id %d \n", send_packg[i].pack_indx);
-                }
-                while(send_packgs.load() > (MAX_H2C_SIZE - DMA_CHANNS)){}
-                write(xdma_h2c_fd, send_packg, sizeof(send_packg));
-                send_packgs.fetch_add(DMA_CHANNS);
-            #else
-                send_packgs.fetch_sub(1);
-            #endif
+            memory_idx_pool.wait_mempool_start();
         #endif
+        while (running) {
             if (recv_count == 256) {
                 #ifdef HAVE_FPGA
                     if(memory_idx_pool.check_group() == false)

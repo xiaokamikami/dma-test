@@ -19,7 +19,7 @@ extern bool running;
 
         MemoryBlock() : is_free(true) {
             void* ptr = nullptr;
-            if (posix_memalign(&ptr, 4096, 4096) != 0) {
+            if (posix_memalign(&ptr, 4096, 4096 + PAGE_SIZE) != 0) {
                 throw std::runtime_error("Failed to allocate aligned memory");
             }
             memset(ptr, 0, 4096);
@@ -111,8 +111,6 @@ private:
     size_t page_head = 0;
     size_t page_end = 0;
 };
-
-
 
 #define MAX_IDX 256
 #define MAX_GROUPING_IDX  NUM_BLOCKS / MAX_IDX
@@ -209,7 +207,7 @@ public:
 
     // 等待空闲内存块
     size_t wait_next_free_group() {
-        size_t free_num = empty_blocks.fetch_sub(1, std::memory_order_relaxed) + 1;
+        size_t free_num = empty_blocks.fetch_sub(1, std::memory_order_relaxed) - 1;
         cv_filled.notify_all();
 
         //printf("get free w_idx - r_idx %d \n", group_w_idx - group_r_idx);

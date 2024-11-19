@@ -89,9 +89,11 @@ public:
 #ifdef HAVE_FPGA
         // 下载workload
         if (use_workload) {
+            device_write("/dev/xdma0_user", 0x20000, 1, false, nullptr);
             device_write("/dev/xdma0_user", 0x100000, 1, false, nullptr);
             device_write("/dev/xdma0_user", 0x10000, 0X8, false, nullptr);
             device_write("/dev/xdma0_bypass", 0x0, 0, true, workload_path);
+            device_write("/dev/xdma0_user", 0x20000, 0, false, nullptr);
             device_write("/dev/xdma0_user", 0x100000, 0, false, nullptr);
         }
 #endif
@@ -247,7 +249,7 @@ private:
     }
 
     int device_write(const char *dev_name, uint64_t addr, uint64_t value, bool is_workload, const char *workload) {
-        size_t size = !is_workload ? 0x1000 : 0x10000;
+        size_t size = !is_workload ? 0x1000 : 0x100000;
         uint64_t aligned_size = (size + 0xffful) & ~0xffful;
         uint64_t base = addr & ~0xffful;
         uint32_t offset = addr & 0xfffu;

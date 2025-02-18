@@ -10,7 +10,7 @@ CXXFLAGS = -std=c++11 -Wall -Wextra -pedantic -march=native -O3 -DDMA_CHANNS=$(D
 INCLUDES = -I../include
 
 # C++ 源文件
-SOURCES = xdma_test.cpp
+SOURCES = xdma_test.cpp ../include/mmpool.cpp
 
 # 需要链接的库
 LIBS = -lrt -lpthread

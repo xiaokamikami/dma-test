@@ -18,7 +18,7 @@
 #include <cassert>
 #include <fstream>
 
-#include "dma_mmpool.cpp"
+#include "mmpool.h"
 #include "diffstate.h"
 
 #define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
@@ -39,7 +39,7 @@ typedef struct {
 
 
 MemoryPool memory_pool;
-MemoryIdxPool memory_idx_pool;
+MemoryIdxPool xdma_mempool;
 
 std::mutex test_mtx;
 std::condition_variable test_cv;
@@ -123,7 +123,7 @@ public:
 #endif
         if (process_thread.joinable()) process_thread.join();
         printf("process STOP \n");
-        memory_idx_pool.cleanupMemoryPool();
+        xdma_mempool.cleanupMemoryPool();
         printf("MEM STOP \n");
     }
 
@@ -132,7 +132,7 @@ private:
 
     std::thread receive_thread[DMA_CHANNS];  // 接收线程
     std::thread process_thread;  // 处理线程
-
+    MemoryIdxPool xdma_mempool;
     int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
     int xdma_h2c_fd;
 
@@ -177,7 +177,7 @@ private:
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
             uint8_t idx = packet->pack_indx;
             printf("[receiveStream] get dma_ch-%d idx %d\n", channel, idx);
-            if (memory_idx_pool.write_free_chunk(idx, rdata) == false) {
+            if (xdma_mempool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 stop();
@@ -189,7 +189,7 @@ private:
             send_packg.pack_indx = encapsulation_packge();
             //printf("[receive] get dma_ch-%d idx %d\n", channel, send_packg.pack_indx);
             //写入伪数据包
-            if (memory_idx_pool.write_free_chunk(send_packg.pack_indx, (char *)&send_packg) == false) {
+            if (xdma_mempool.write_free_chunk(send_packg.pack_indx, (char *)&send_packg) == false) {
                 stream_receiver_cout = TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
@@ -207,19 +207,19 @@ private:
         static size_t recv_count = 256;
         DmaPackge test_packge;
         #ifdef HAVE_FPGA
-            memory_idx_pool.wait_mempool_start();
+            xdma_mempool.wait_mempool_start();
         #endif
         while (running) {
             if (recv_count == 256) {
                 #ifdef HAVE_FPGA
-                    if(memory_idx_pool.check_group() == false)
+                    if(xdma_mempool.check_group() == false)
                         continue;
                 #else
-                    while(memory_idx_pool.check_group() == false) {}
+                    while(xdma_mempool.check_group() == false) {}
                 #endif
                 recv_count = 0;
             }
-            if (memory_idx_pool.read_busy_chunk((char *)&test_packge) == false) {
+            if (xdma_mempool.read_busy_chunk((char *)&test_packge) == false) {
                 printf("[processData]read_busy_chunk\n");
                 stop();
                 assert(0);
@@ -324,10 +324,10 @@ int main(int argc, const char *argv[]) {
 		double time_consum = (ts_end.tv_sec - ts_start.tv_sec) + 
                      ((ts_end.tv_nsec - ts_start.tv_nsec) / (double)1000000000);
         std::cout << "Program time consumption: " << time_consum << " S"
-                  << " Transfer block: " << stream_receiver_cout << " Size per receive: " << BLOCK_SIZE
+                  << " Transfer block: " << stream_receiver_cout << " Size per receive: " << MEMBLOCK_SIZE
                   << std::endl;
         // Pref
-        uint64_t receive_bytes = BLOCK_SIZE * stream_receiver_cout;
+        uint64_t receive_bytes = MEMBLOCK_SIZE * stream_receiver_cout;
         uint64_t rate_bytes = receive_bytes / time_consum;
 #ifdef HAVE_FPGA
         std::cout << "XDMA Stream rate = "; 

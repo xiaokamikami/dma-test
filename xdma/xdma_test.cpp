@@ -21,6 +21,12 @@
 #include "mmpool.h"
 #include "diffstate.h"
 
+#ifdef CONFIG_DIFFTEST_BATCH
+#define PACKGE_SIZE    (CONFIG_DIFFTEST_BATCH_BYTELEN + 1)
+#else
+#define PACKGE_SIZE     4096
+#endif
+
 #define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
 #define DEVICE_H2C_NAME "/dev/xdma0_h2c_"
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
@@ -37,10 +43,6 @@ typedef struct {
     char data[4095];
 } DmaPackge;
 
-
-MemoryPool memory_pool;
-MemoryIdxPool xdma_mempool;
-
 std::mutex test_mtx;
 std::condition_variable test_cv;
 std::atomic <uint64_t> stream_receiver_cout{0};
@@ -52,7 +54,7 @@ class StreamReceiver {
 public:
     // 构造函数：初始化StreamReceiver对象
     StreamReceiver()
-        : running(false) {
+        : running(false), xdma_mempool(PACKGE_SIZE) {
 #ifdef HAVE_FPGA
     for(int i = 0; i < DMA_CHANNS;i ++) {
         char c2h_device[64];

@@ -1,5 +1,11 @@
 #include "mmpool.h"
 
+#if defined(__GNUC__) || defined(__clang__)
+# define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+# define unlikely(x) (x)
+#endif
+
 void MemoryPool::init_memory_pool() {
   memory_pool.reserve(NUM_BLOCKS);
   for (size_t i = 0; i < NUM_BLOCKS; ++i) {
@@ -66,30 +72,30 @@ void MemoryIdxPool::cleanupMemoryPool() {
 bool MemoryIdxPool::write_free_chunk(uint8_t idx, const char *data) {
   size_t page_w_idx;
   {
-    std::lock_guard<std::mutex> lock(offset_mutexes);
+    std::lock_guard<SpinLock> lock(offset_mutexes);
 
-    page_w_idx = idx + group_w_offset;
+    page_w_idx = idx + group_w_offset.load(std::memory_order_relaxed);
     // Processing of winding data at the boundary
-    if (memory_pool[page_w_idx].is_free.load() == false) {
-      size_t this_group = group_w_idx.load();
+    if (unlikely(memory_pool[page_w_idx].is_free.load(std::memory_order_relaxed) == false)) {
+      size_t this_group = group_w_idx.load(std::memory_order_relaxed);
       size_t offset = ((this_group & REM_MAX_GROUPING_IDX) * MAX_IDX);
       page_w_idx = idx + offset;
-      write_next_count++;
+      write_next_count.fetch_add(1, std::memory_order_relaxed);
       // Lookup failed
-      if (memory_pool[page_w_idx].is_free.load() == false) {
+      if (memory_pool[page_w_idx].is_free.load(std::memory_order_relaxed) == false) {
         printf("This block has been written, and there is a duplicate packge idx %d\n", idx);
         return false;
       }
     } else {
-      write_count++;
+      write_count.fetch_add(1, std::memory_order_relaxed);
       // Proceed to the next group
-      if (write_count == MAX_IDX) {
+      if (unlikely(write_count.load(std::memory_order_relaxed) == MAX_IDX)) {
         memcpy(memory_pool[page_w_idx].data.get(), data, mem_block_size);
         memory_pool[page_w_idx].is_free.store(false);
         size_t next_w_idx = wait_next_free_group();
-        group_w_offset = (next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX;
-        write_count = write_next_count;
-        write_next_count = 0;
+        group_w_offset.store((next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
+        write_count.store(write_next_count);
+        write_next_count.store(0);
         return true;
       }
     }
@@ -120,6 +126,7 @@ bool MemoryIdxPool::read_busy_chunk(char *data) {
   }
 
   memcpy(data, memory_pool[page_r_idx].data.get(), mem_block_size);
+  __builtin_prefetch(memory_pool[page_r_idx + 1].data.get(), 0, 2);
   memory_pool[page_r_idx].is_free.store(true);
   return true;
 }

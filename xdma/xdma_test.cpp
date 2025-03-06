@@ -32,7 +32,7 @@
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
 #define MAX_H2C_SIZE (128 / DMA_CHANNS)
 
-#define TEST_NUM  8192000
+#define TEST_NUM  40960000
 //#define LOOP_BACK
 
 #define DMA_QUEUE_SIZE 32
@@ -208,9 +208,7 @@ private:
     void processData() {
         static size_t recv_count = 256;
         DmaPackge test_packge;
-        #ifdef HAVE_FPGA
-            xdma_mempool.wait_mempool_start();
-        #endif
+        xdma_mempool.wait_mempool_start();
         while (running) {
             if (recv_count == 256) {
                 #ifdef HAVE_FPGA

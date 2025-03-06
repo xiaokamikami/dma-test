@@ -5,7 +5,7 @@ FPGA?=0
 DMA_CHANNS?=1
 
 # C++ 编译标志
-CXXFLAGS = -std=c++11 -Wall -Wextra -pedantic -march=native -O3 -DDMA_CHANNS=$(DMA_CHANNS)
+CXXFLAGS = -std=c++11 -Wall -Wextra -pedantic -march=native -O3 -DDMA_CHANNS=$(DMA_CHANNS) 
 # 包含目录
 INCLUDES = -I../include
 
@@ -14,6 +14,10 @@ SOURCES = xdma_test.cpp ../include/mmpool.cpp
 
 # 需要链接的库
 LIBS = -lrt -lpthread
+
+ifeq ($(DEBUG),0)
+	CXXFLAGS += -fsanitize=thread -g
+endif
 
 ifeq ($(FPGA),1)
 	CXXFLAGS += -DHAVE_FPGA

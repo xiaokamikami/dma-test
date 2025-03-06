@@ -208,9 +208,7 @@ private:
     void processData() {
         static size_t recv_count = 256;
         DmaPackge test_packge;
-        #ifdef HAVE_FPGA
-            xdma_mempool.wait_mempool_start();
-        #endif
+        xdma_mempool.wait_mempool_start();
         while (running) {
             if (recv_count == 256) {
                 #ifdef HAVE_FPGA

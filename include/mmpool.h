@@ -8,7 +8,14 @@
 #include <mutex>
 #include <stdexcept>
 #include <vector>
+#include <xmmintrin.h>
 #include "diffstate.h"
+
+#if defined(__GNUC__) || defined(__clang__)
+# define unlikely(x) __builtin_expect(!!(x), 0)
+#else
+# define unlikely(x) (x)
+#endif
 
 #define MEMPOOL_SIZE   16384 * 1024 // 16M memory
 #define MEMBLOCK_SIZE  4096         // 4K packge
@@ -53,6 +60,18 @@ public:
   // Disable the copy constructor and copy assignment operator
   MemoryBlock(const MemoryBlock &) = delete;
   MemoryBlock &operator=(const MemoryBlock &) = delete;
+};
+
+class SpinLock {
+    std::atomic_flag locked = ATOMIC_FLAG_INIT;
+public:
+    void lock() {
+        while (locked.test_and_set(std::memory_order_acquire)) 
+            _mm_pause();
+    }
+    void unlock() {
+        locked.clear(std::memory_order_release);
+    }
 };
 
 class MemoryPool {
@@ -157,16 +176,15 @@ public:
 private:
   std::vector<MemoryBlock> memory_pool; // Mempool
   std::mutex window_mutexes;           // window sliding protection
-  std::mutex offset_mutexes;           // w/r offset protection
+  SpinLock offset_mutexes;           // w/r offset protection
   std::condition_variable cv_empty;    // Free block condition variable
   std::condition_variable cv_filled;   // Filled block condition variable
 
   size_t group_r_offset = 0; // The offset used by the current consumer
-  size_t group_w_offset = 0; // The offset used by the current producer
   size_t read_count = 0;
-  size_t write_count = 0;
-  size_t write_next_count = 0;
-
+  std::atomic<size_t> group_w_offset {0}; // The offset used by the current producer
+  std::atomic<size_t> write_count {0};
+  std::atomic<size_t> write_next_count {0};
   std::atomic<size_t> empty_blocks{MAX_GROUP_READ};
   std::atomic<size_t> group_w_idx{1};
   std::atomic<size_t> group_r_idx{1};

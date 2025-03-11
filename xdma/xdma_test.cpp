@@ -30,7 +30,7 @@
 #define DEVICE_C2H_NAME "/dev/xdma0_c2h_"
 #define DEVICE_H2C_NAME "/dev/xdma0_h2c_"
 //#define TEST_NUM (16000000ll / (BLOCK_SIZE / 4096))
-#define MAX_H2C_SIZE (128 / DMA_CHANNS)
+#define MAX_H2C_SIZE (128 / CONFIG_DMA_CHANNELS)
 
 #define TEST_NUM  40960000
 //#define LOOP_BACK
@@ -56,7 +56,7 @@ public:
     StreamReceiver()
         : running(false), xdma_mempool(PACKGE_SIZE) {
 #ifdef HAVE_FPGA
-    for(int i = 0; i < DMA_CHANNS;i ++) {
+    for(int i = 0; i < CONFIG_DMA_CHANNELS;i ++) {
         char c2h_device[64];
         sprintf(c2h_device,"%s%d",DEVICE_C2H_NAME,i);
         xdma_c2h_fd[i] = open(c2h_device, O_RDONLY );
@@ -100,7 +100,7 @@ public:
         }
 #endif
 
-        for(int i = 0; i < DMA_CHANNS;i ++) {
+        for(int i = 0; i < CONFIG_DMA_CHANNELS;i ++) {
             printf("start c2h channel %d \n", i);
             receive_thread[i] = std::thread(&StreamReceiver::receiveStream, this, i);
         }
@@ -113,7 +113,7 @@ public:
         if (!running.exchange(false)) return; // 如果已经停止，直接返回
 
         // 通知线程停止
-        for(int i = 0; i < DMA_CHANNS;i ++) {
+        for(int i = 0; i < CONFIG_DMA_CHANNELS;i ++) {
             if (receive_thread[i].joinable()) receive_thread[i].join();
             printf("receive %d STOP \n",i);
 #ifdef HAVE_FPGA
@@ -125,20 +125,19 @@ public:
 #endif
         if (process_thread.joinable()) process_thread.join();
         printf("process STOP \n");
-        xdma_mempool.cleanupMemoryPool();
         printf("MEM STOP \n");
     }
 
 private:
     std::atomic<bool> running;   // 运行标志
 
-    std::thread receive_thread[DMA_CHANNS];  // 接收线程
+    std::thread receive_thread[CONFIG_DMA_CHANNELS];  // 接收线程
     std::thread process_thread;  // 处理线程
     MemoryIdxPool xdma_mempool;
-    int xdma_c2h_fd[DMA_CHANNS];             // XDMA文件描述符
+    int xdma_c2h_fd[CONFIG_DMA_CHANNELS];             // XDMA文件描述符
     int xdma_h2c_fd;
 
-    uint64_t send_flow_cout[DMA_CHANNS] = {0};
+    uint64_t send_flow_cout[CONFIG_DMA_CHANNELS] = {0};
     // 生成测速数据包
     uint8_t encapsulation_packge() {
         static std::atomic<uint8_t> pack_indx{0};
@@ -149,10 +148,10 @@ private:
         bool flow_control = true;
         uint64_t send_flow_cout_i = send_flow_cout[channel];
         do{
-            for (int j = 0; j < DMA_CHANNS; j++) {
+            for (int j = 0; j < CONFIG_DMA_CHANNELS; j++) {
                 if (j == channel) continue; // 跳过当前通道
                 uint64_t diff = send_flow_cout_i - send_flow_cout[j];
-                if (diff < DMA_CHANNS) {
+                if (diff < CONFIG_DMA_CHANNELS) {
                     flow_control = false;
                 } else {
                     flow_control = true;
@@ -332,7 +331,7 @@ int main(int argc, const char *argv[]) {
 #ifdef HAVE_FPGA
         std::cout << "XDMA Stream rate = "; 
 #else
-        std::cout << "The DMA HAVE_CHANNS:" << DMA_CHANNS << ", C2H theoretical rate of a thread = "; 
+        std::cout << "The DMA HAVE_CHANNS:" << CONFIG_DMA_CHANNELS << ", C2H theoretical rate of a thread = "; 
 #endif
         std::cout << rate_bytes / 1024 / 1024 << "MB/s" << std::endl;
     } catch (const std::exception& e) {

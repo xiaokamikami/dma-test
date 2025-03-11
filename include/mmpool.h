@@ -122,6 +122,7 @@ private:
   const size_t REM_MAX_IDX = (MAX_IDX - 1);
   const size_t REM_MAX_GROUPING_IDX = (MAX_GROUPING_IDX - 1);
   uint64_t mem_block_size = MEMBLOCK_SIZE;
+
 public:
   MemoryIdxPool(uint64_t block_size) : mem_block_size(block_size) {
     initMemoryPool();
@@ -129,7 +130,6 @@ public:
   MemoryIdxPool() : mem_block_size(MEMBLOCK_SIZE) {
   }
   ~MemoryIdxPool() {
-    cleanupMemoryPool();
   }
   // Disable copy constructors and copy assignment operators
   MemoryIdxPool(const MemoryIdxPool &) = delete;
@@ -138,14 +138,11 @@ public:
   void initMemoryPool() {
     memory_pool.clear();
     memory_pool.reserve(MEMBLOCK_SIZE);
-        printf("MemoryIdxPool block_size %ld\n", mem_block_size);
+    printf("MemoryIdxPool block_size %ld\n", mem_block_size);
     for (size_t i = 0; i < MEMBLOCK_SIZE; ++i) {
       memory_pool.emplace_back(mem_block_size);
     }
   }
-
-  // Cleaning up memory pools
-  void cleanupMemoryPool();
 
   // Write a specified free block of a free window
   bool write_free_chunk(uint8_t idx, const char *data);
@@ -167,10 +164,7 @@ public:
 
 private:
   std::vector<MemoryBlock> memory_pool; // Mempool
-  std::mutex window_mutexes;           // window sliding protection
   SpinLock offset_mutexes;           // w/r offset protection
-  std::condition_variable cv_empty;    // Free block condition variable
-  std::condition_variable cv_filled;   // Filled block condition variable
 
   size_t group_r_offset = 0; // The offset used by the current consumer
   size_t read_count = 0;

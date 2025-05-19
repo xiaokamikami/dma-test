@@ -39,8 +39,7 @@
 #define DMA_QUEUE_MAX_SIZE 255
 
 typedef struct {
-    uint8_t pack_indx;
-    char data[4095];
+    uint8_t data[4096];
 } DmaPackge;
 
 std::mutex test_mtx;
@@ -162,6 +161,7 @@ private:
 
     // 接收流数据
     void receiveStream(int channel) {
+        size_t mem_get_idx;
     #ifdef HAVE_FPGA
         char *rdata = (char *)malloc(4096);
     #else
@@ -176,7 +176,7 @@ private:
 
             // 还原数据包
             DmaPackge* packet = reinterpret_cast<DmaPackge*>(rdata); // rdata现在是指向包含DmaPackge的内存的指针  
-            uint8_t idx = packet->pack_indx;
+            uint8_t idx = send_packg.data[0];
             printf("[receiveStream] get dma_ch-%d idx %d\n", channel, idx);
             if (xdma_mempool.write_free_chunk(idx, rdata) == false) {
                 stream_receiver_cout == TEST_NUM;
@@ -187,10 +187,16 @@ private:
     #else // NO FPGA
             send_flow_control(channel);
 
-            send_packg.pack_indx = encapsulation_packge();
-            //printf("[receive] get dma_ch-%d idx %d\n", channel, send_packg.pack_indx);
+            send_packg.data[0] = encapsulation_packge();
+            char *mem = xdma_mempool.get_free_chunk(&mem_get_idx);
+            if (!mem) {
+                std::cerr << "Failed to get free chunk!" << std::endl;
+                assert(0);
+            }
+            memcpy(mem, &send_packg, sizeof(send_packg));
+            //printf("[receive] get dma_ch-%d idx %d\n", channel, send_packg.data[0]);
             //写入伪数据包
-            if (xdma_mempool.write_free_chunk(send_packg.pack_indx, (char *)&send_packg) == false) {
+            if (xdma_mempool.write_free_chunk(send_packg.data[0], mem_get_idx) == false) {
                 stream_receiver_cout = TEST_NUM;
                 printf("It should not be the case that no available block can be found\n");
                 test_cv.notify_all();
@@ -207,6 +213,7 @@ private:
     void processData() {
         static size_t recv_count = 256;
         DmaPackge test_packge;
+        DmaPackge *test_packge_ptr = NULL;
         xdma_mempool.wait_mempool_start();
         while (running) {
             if (recv_count == 256) {
@@ -218,16 +225,18 @@ private:
                 #endif
                 recv_count = 0;
             }
-            if (xdma_mempool.read_busy_chunk((char *)&test_packge) == false) {
+            test_packge_ptr = reinterpret_cast<DmaPackge*>(xdma_mempool.read_busy_chunk());
+            if (test_packge_ptr == nullptr) {
                 printf("[processData]read_busy_chunk\n");
                 stop();
                 assert(0);
             }
-            if (test_packge.pack_indx != recv_count) {
-                printf("[processData]difftest idx check faile packge=%d, need=%ld\n", test_packge.pack_indx, recv_count);
+            if (test_packge_ptr->data[0] != recv_count) {
+                printf("[processData]difftest idx check faile packge=%d, need=%ld\n", test_packge_ptr->data[0], recv_count);
                 stop();
                 assert(0);
             }
+            xdma_mempool.set_free_chunk();
             stream_receiver_cout ++;
             recv_count ++;
 

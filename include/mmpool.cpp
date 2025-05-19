@@ -64,20 +64,20 @@ void MemoryPool::set_free_chunk() {
 }
 
 // Write a specified free block of a free window
-bool MemoryIdxPool::write_free_chunk(uint8_t idx, const char *data) {
+bool MemoryIdxPool::write_free_chunk(uint8_t idx, size_t mem_idx) {
   size_t page_w_idx;
   {
-    std::lock_guard<SpinLock> lock(offset_mutexes);
+    std::lock_guard<SpinLock> lock(order_mutex);
 
     page_w_idx = idx + group_w_offset.load(std::memory_order_relaxed);
     // Processing of winding data at the boundary
-    if (unlikely(memory_pool[page_w_idx].is_free.load(std::memory_order_relaxed) == false)) {
+    if (unlikely(memory_order_ptr[page_w_idx].is_free.load(std::memory_order_relaxed) == false)) {
       size_t this_group = group_w_idx.load(std::memory_order_relaxed);
       size_t offset = ((this_group & REM_MAX_GROUPING_IDX) * MAX_IDX);
       page_w_idx = idx + offset;
       write_next_count.fetch_add(1, std::memory_order_relaxed);
       // Lookup failed
-      if (memory_pool[page_w_idx].is_free.load(std::memory_order_relaxed) == false) {
+      if (memory_order_ptr[page_w_idx].is_free.load(std::memory_order_relaxed) == false) {
         printf("This block has been written, and there is a duplicate packge idx %d\n", idx);
         return false;
       }
@@ -85,8 +85,8 @@ bool MemoryIdxPool::write_free_chunk(uint8_t idx, const char *data) {
       write_count.fetch_add(1, std::memory_order_relaxed);
       // Proceed to the next group
       if (unlikely(write_count.load(std::memory_order_relaxed) == MAX_IDX)) {
-        memcpy(memory_pool[page_w_idx].data.get(), data, mem_block_size);
-        memory_pool[page_w_idx].is_free.store(false);
+        memory_order_ptr[page_w_idx].is_free.store(false);
+        memory_order_ptr[page_w_idx].memblock_idx.store(mem_idx);
         size_t next_w_idx = wait_next_free_group();
         group_w_offset.store((next_w_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
         write_count.store(write_next_count);
@@ -94,35 +94,57 @@ bool MemoryIdxPool::write_free_chunk(uint8_t idx, const char *data) {
         return true;
       }
     }
-    memory_pool[page_w_idx].is_free.store(false);
+    memory_order_ptr[page_w_idx].is_free.store(false);
   }
-  memcpy(memory_pool[page_w_idx].data.get(), data, mem_block_size);
-
+  memory_order_ptr[page_w_idx].memblock_idx.store(mem_idx);
   return true;
+}
+
+char *MemoryIdxPool::get_free_chunk(size_t *mem_idx) {
+  {
+    std::lock_guard<SpinLock> lock(offset_mutexes);
+    size_t page_w_idx = mem_chunk_idx.load();
+    if (mem_chunk_idx == NUM_BLOCKS - 1)
+      mem_chunk_idx.store(0);
+    else
+      mem_chunk_idx.fetch_add(1, std::memory_order_relaxed);
+    if (memory_pool[page_w_idx].is_free.load(std::memory_order_relaxed) == true)
+    {
+      memory_pool[page_w_idx].is_free.store(false);
+      *mem_idx = page_w_idx;
+      return memory_pool[page_w_idx].data.get();
+    }
+  }
+
+  return nullptr;
 }
 
 void MemoryIdxPool::wait_mempool_start() {
   while(check_group() == false);
 }
 
-bool MemoryIdxPool::read_busy_chunk(char *data) {
+char *MemoryIdxPool::read_busy_chunk() {
   size_t page_r_idx = read_count + group_r_offset;
-  size_t this_r_idx = ++read_count;
+  if (memory_order_ptr[page_r_idx].is_free.load() == true) {
+    printf("An attempt was made to read the block of free %zu\n", page_r_idx);
+    return nullptr;
+  }
+  size_t memory_pool_idx = memory_order_ptr[page_r_idx].memblock_idx.load();
+  char *data = memory_pool[memory_pool_idx].data.get();
+  wait_setfree_mem_idx.store(memory_pool_idx, std::memory_order_relaxed);
+  wait_setfree_ptr_idx.store(page_r_idx, std::memory_order_relaxed);
 
-  if (this_r_idx == MAX_IDX) {
-    read_count = 0;
+  return data;
+}
+
+void MemoryIdxPool::set_free_chunk() {
+  memory_order_ptr[wait_setfree_ptr_idx].is_free.store(true, std::memory_order_relaxed);
+  memory_pool[wait_setfree_mem_idx].is_free.store(true, std::memory_order_relaxed);
+  if (++read_count == MAX_IDX) {
     size_t next_r_idx = wait_next_full_group();
     group_r_offset = ((next_r_idx & REM_MAX_GROUPING_IDX) * MAX_IDX);
+    read_count.store(0, std::memory_order_relaxed);
   }
-  if (memory_pool[page_r_idx].is_free.load() == true) {
-    printf("An attempt was made to read the block of free %zu\n", page_r_idx);
-    return false;
-  }
-
-  memcpy(data, memory_pool[page_r_idx].data.get(), mem_block_size);
-  __builtin_prefetch(memory_pool[page_r_idx + 1].data.get(), 0, 2);
-  memory_pool[page_r_idx].is_free.store(true);
-  return true;
 }
 
 size_t MemoryIdxPool::wait_next_free_group() {
@@ -143,7 +165,6 @@ size_t MemoryIdxPool::wait_next_full_group() {
     while (empty_blocks.load(std::memory_order_acquire) >= MAX_GROUP_READ) {
       std::this_thread::sleep_for(std::chrono::nanoseconds(10));
     }
-
   }
   return group_r_idx.fetch_add(1);
 }
